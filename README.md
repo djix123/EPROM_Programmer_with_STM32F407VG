@@ -145,6 +145,28 @@ The default CDC RX buffer (`APP_RX_DATA_SIZE`, usually 2048 bytes in the
 generated `usbd_cdc_if.c`) is plenty for our largest frame (~520 bytes);
 no need to change it.
 
+## Flashing / debugging (OpenOCD + ST-Link)
+
+The repo includes `openocd.cfg` and `STM32F407.svd` for flashing and
+debugging over an ST-Link probe with OpenOCD -- this is what's set up
+and tested in CLion (Settings → Build, Execution, Deployment → Embedded
+Development → OpenOCD, and an OpenOCD run/debug configuration pointing
+at the built `.elf`).
+
+- `openocd.cfg` sources `interface/stlink.cfg` and `target/stm32f4x.cfg`
+  from OpenOCD's stock config set -- no vendor-specific ST-Link variant
+  or transport override should be needed for a standard ST-Link/V2 or
+  onboard ST-Link. Uncomment the alternate `interface/*` line if your
+  probe needs it.
+- `STM32F407.svd` is the peripheral register map, used by CLion's (or
+  GDB's) peripheral/SFR register view during a debug session.
+
+From the command line, OpenOCD can also be driven directly, e.g.:
+
+```bash
+openocd -f openocd.cfg -c "program build/Debug/EPROM_Programmer_with_STM32F407VG.elf verify reset exit"
+```
+
 ## Running the host tool
 
 ```bash
