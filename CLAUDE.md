@@ -10,8 +10,6 @@ directly over GPIO (no FSMC), controlled from a PC over USB-CDC (virtual
 COM port). A PC-side tool pushes a `.bin` file over the serial link to
 erase, write, and verify it, or just query chip ID/size/sector info.
 
-Note: this is not (yet) a git repository.
-
 ## Build
 
 Requires the `arm-none-eabi-gcc` toolchain on `PATH` and CMake + Ninja.
@@ -26,8 +24,11 @@ are no unit tests in this repo — correctness is validated by flashing
 the board and exercising it against real hardware (chip ID readback,
 program/verify round-trip) via the host tool.
 
-Flashing/debugging is expected via an external tool (e.g. ST-Link,
-OpenOCD, CLion's embedded debugger) — nothing in-repo drives that.
+Flashing/debugging is via OpenOCD + ST-Link, configured for CLion's
+embedded debugger. `openocd.cfg` (stlink/stm32f4x config) and
+`STM32F407.svd` (peripheral register map for the SFR view) are the only
+in-repo pieces of that setup — see README.md "Flashing / debugging
+(OpenOCD + ST-Link)" for the CLion config and a CLI flashing example.
 
 Host tool (after flashing):
 
