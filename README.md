@@ -13,6 +13,11 @@ picks the right sector size (SST39SF040: 4KB sectors; AM29F040B: 64KB
 sectors) and erase timeouts -- no rebuilding or rewiring to switch chips,
 just plug in whichever one you have.
 
+Tested working on real hardware: an STM32F407VGT6 board bit-banging a
+socketed AM29F040B, exercised end-to-end from `host/program.py` --
+chip ID readback, chip/sector erase, program, and read-verify all
+confirmed against the physical chip.
+
 ## Architecture
 
 - `sst39sf040.h/.c` -- low-level driver. Bit-bangs the parallel bus
