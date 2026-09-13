@@ -165,6 +165,10 @@ which the flashing commands below expect.
 
 ### Releases
 
+Prebuilt firmware (`.elf`/`.bin`/`.hex`) plus `host/program.py` are
+attached to each tagged release --
+[latest release](https://github.com/djix123/EPROM_Programmer_with_STM32F407VG/releases/latest).
+
 `.github/workflows/release.yml` builds the firmware (Release preset)
 in CI and, when the trigger is a tag matching `v*.*.*`, publishes a
 GitHub Release with the built `.elf`, `.bin`, `.hex`, and
