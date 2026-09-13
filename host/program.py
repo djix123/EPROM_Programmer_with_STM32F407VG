@@ -14,6 +14,7 @@ Usage:
     python program.py app.bin --port COM5 --address 0x10000
     python program.py --port COM5 --dump backup.bin
     python program.py --port COM5 --dump partial.bin --address 0x10000 --length 0x8000
+    python program.py --port COM5 --chip-erase
 """
 import argparse
 import struct
@@ -52,6 +53,12 @@ KNOWN_CHIPS = {
 WRITE_CHUNK_SIZE = 256   # bytes of flash data per WRITE command (max 508)
 READ_CHUNK_SIZE = 256    # bytes per READ command (max 512, firmware-side cap)
 
+# Margin above the firmware's own worst-case erase timeouts (chip_table[]
+# in Src/sst39sf040.c) -- must stay >= those or a slow-but-still-successful
+# erase will look like a dropped connection to the host.
+CHIP_ERASE_TIMEOUT_S = 25.0
+SECTOR_ERASE_TIMEOUT_S = 5.0
+
 
 def crc8(data: bytes) -> int:
     """Must match crc8() in flash_usb_protocol.c: poly 0x07, init 0x00."""
@@ -89,27 +96,37 @@ class FlashLink:
             buf += chunk
         return buf
 
-    def _transact(self, cmd: int, payload: bytes = b""):
+    def _transact(self, cmd: int, payload: bytes = b"", timeout: float = None):
         """Send a command and return (status, payload) -- never raises on
-        a non-OK status, so callers can decide how to handle it."""
-        self._send_frame(cmd, payload)
-        while True:
-            sof = self._read_exact(1)
-            if sof[0] == FRAME_SOF_RESP:
-                break
-        header = self._read_exact(3)
-        status = header[0]
-        plen = struct.unpack("<H", header[1:3])[0]
-        resp_payload = self._read_exact(plen) if plen else b""
-        crc_recv = self._read_exact(1)[0]
-        if crc8(header + resp_payload) != crc_recv:
-            raise IOError("CRC mismatch in response from device")
-        return status, resp_payload
+        a non-OK status, so callers can decide how to handle it. If
+        `timeout` is given, the serial read timeout is temporarily raised
+        to it for this call (needed for erase commands, which can legitimately
+        take much longer than a normal command's response time)."""
+        old_timeout = self.ser.timeout
+        if timeout is not None:
+            self.ser.timeout = timeout
+        try:
+            self._send_frame(cmd, payload)
+            while True:
+                sof = self._read_exact(1)
+                if sof[0] == FRAME_SOF_RESP:
+                    break
+            header = self._read_exact(3)
+            status = header[0]
+            plen = struct.unpack("<H", header[1:3])[0]
+            resp_payload = self._read_exact(plen) if plen else b""
+            crc_recv = self._read_exact(1)[0]
+            if crc8(header + resp_payload) != crc_recv:
+                raise IOError("CRC mismatch in response from device")
+            return status, resp_payload
+        finally:
+            if timeout is not None:
+                self.ser.timeout = old_timeout
 
-    def command(self, cmd: int, payload: bytes = b""):
+    def command(self, cmd: int, payload: bytes = b"", timeout: float = None):
         """Like _transact(), but raises IOError on a non-OK status. Used
         for commands where a failure should always abort the run."""
-        status, resp_payload = self._transact(cmd, payload)
+        status, resp_payload = self._transact(cmd, payload, timeout=timeout)
         if status != 0x00:
             name = STATUS_NAMES.get(status, f"0x{status:02X}")
             raise IOError(f"device returned {name} for command 0x{cmd:02X}")
@@ -135,10 +152,15 @@ class FlashLink:
         return status, mfr, dev, chip_size, sector_size
 
     def chip_erase(self):
-        self.command(CMD_CHIP_ERASE)
+        # Firmware-side timeout is up to 20s for the AM29F040B (see
+        # chip_erase_timeout_us in chip_table[], Src/sst39sf040.c) -- give
+        # it margin above that rather than the default 3s command timeout.
+        self.command(CMD_CHIP_ERASE, timeout=CHIP_ERASE_TIMEOUT_S)
 
     def sector_erase(self, addr: int):
-        self.command(CMD_SECTOR_ERASE, struct.pack("<I", addr))
+        # Firmware-side timeout is up to 2s for the AM29F040B (see
+        # sector_erase_timeout_us in chip_table[], Src/sst39sf040.c).
+        self.command(CMD_SECTOR_ERASE, struct.pack("<I", addr), timeout=SECTOR_ERASE_TIMEOUT_S)
 
     def write(self, addr: int, data: bytes):
         self.command(CMD_WRITE, struct.pack("<I", addr) + data)
@@ -198,6 +220,18 @@ def dump_chip(link: FlashLink, out_path: str, address: int, length: int = None):
     with open(out_path, "wb") as f:
         f.write(data)
     print(f"Saved {len(data)} bytes to {out_path}")
+
+
+def erase_chip(link: FlashLink):
+    """Erases the entire chip and nothing else -- used when --chip-erase is
+    given without an image to program."""
+    status, mfr, dev, chip_size, sector_size = link.get_info(require_known=True)
+    print_chip_info(status, mfr, dev, chip_size, sector_size)
+
+    print("Erasing entire chip...")
+    t0 = time.time()
+    link.chip_erase()
+    print(f"Chip erase done in {time.time() - t0:.2f}s")
 
 
 def program(link: FlashLink, image: bytes, address: int, chip_erase: bool,
@@ -264,7 +298,8 @@ def main():
     ap = argparse.ArgumentParser(
         description="Program an SST39SF040 or AM29F040B via the STM32F407VE USB-CDC flasher")
     ap.add_argument("image", nargs="?",
-                     help="path to the .bin file to program (omit with --info or --dump)")
+                     help="path to the .bin file to program (omit with --info, --dump, or "
+                          "a standalone --chip-erase)")
     ap.add_argument("--port", required=True, help="serial port, e.g. /dev/ttyACM0 or COM5")
     ap.add_argument("--address", type=lambda s: int(s, 0), default=0,
                      help="flash byte offset, decimal or 0x-prefixed hex (default 0x0). When "
@@ -284,17 +319,21 @@ def main():
     ap.add_argument("--chip-erase", action="store_true",
                      help="erase the ENTIRE chip before programming, instead of only the "
                           "sectors the image covers (slower, but guarantees a clean chip "
-                          "with no leftover data past the image)")
+                          "with no leftover data past the image). If no image is given, "
+                          "erases the chip and exits -- no programming or verification")
     ap.add_argument("--no-verify", action="store_true", help="skip read-back verification")
     ap.add_argument("--chunk-size", type=int, default=WRITE_CHUNK_SIZE,
                      help="bytes of flash data per USB write command (default 256, max 508)")
     args = ap.parse_args()
 
-    modes_selected = sum([bool(args.info), bool(args.dump), bool(args.image)])
+    erase_only = args.chip_erase and not args.image
+
+    modes_selected = sum([bool(args.info), bool(args.dump), bool(args.image), erase_only])
     if modes_selected == 0:
-        ap.error("provide an image to program, or use --info or --dump")
+        ap.error("provide an image to program, or use --info, --dump, or --chip-erase")
     if modes_selected > 1:
-        ap.error("--info, --dump, and programming an image are mutually exclusive -- pick one")
+        ap.error("--info, --dump, --chip-erase (without an image), and programming an "
+                  "image are mutually exclusive -- pick one")
 
     if args.chunk_size > 508:
         sys.exit("--chunk-size must be <= 508 (firmware payload cap minus 4-byte address)")
@@ -310,6 +349,11 @@ def main():
 
         if args.dump:
             dump_chip(link, args.dump, address=args.address, length=args.length)
+            return
+
+        if erase_only:
+            erase_chip(link)
+            print("Done.")
             return
 
         with open(args.image, "rb") as f:

@@ -252,7 +252,9 @@ Options:
 - `--chip-erase` -- erase the **entire chip** first instead of just the
   sectors the image covers. Slower, but leaves nothing stale beyond the
   image. Without this flag, only the sectors needed for the image size
-  are erased.
+  are erased. If no `.bin` file is given, this erases the chip and
+  exits -- e.g. `python host/program.py --port COM5 --chip-erase` wipes
+  the chip without programming anything.
 - `--no-verify` -- skip the read-back verification pass.
 - `--chunk-size N` -- bytes of flash data per USB write command
   (default 256, max 508). Lower it if you see CRC errors on a flaky
