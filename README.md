@@ -150,6 +150,19 @@ The default CDC RX buffer (`APP_RX_DATA_SIZE`, usually 2048 bytes in the
 generated `usbd_cdc_if.c`) is plenty for our largest frame (~520 bytes);
 no need to change it.
 
+## Build
+
+Requires the `arm-none-eabi-gcc` toolchain on `PATH`, plus CMake and
+Ninja.
+
+```bash
+cmake --preset Debug        # or Release
+cmake --build build/Debug   # or build/Release
+```
+
+This produces `build/Debug/EPROM_Programmer_with_STM32F407VG.elf`,
+which the flashing commands below expect.
+
 ## Flashing / debugging (OpenOCD + ST-Link)
 
 The repo includes `openocd.cfg` and `STM32F407.svd` for flashing and
