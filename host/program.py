@@ -15,6 +15,7 @@ Usage:
     python program.py --port COM5 --dump backup.bin
     python program.py --port COM5 --dump partial.bin --address 0x10000 --length 0x8000
     python program.py --port COM5 --chip-erase
+    python program.py patch.bin --port COM5 --address 0x1200 --merge
 """
 import argparse
 import struct
@@ -222,6 +223,39 @@ def dump_chip(link: FlashLink, out_path: str, address: int, length: int = None):
     print(f"Saved {len(data)} bytes to {out_path}")
 
 
+def read_range(link: FlashLink, address: int, length: int) -> bytes:
+    """Chunked read of `length` bytes starting at `address` (no progress
+    output -- used internally for small merge reads, not user-facing dumps)."""
+    data = bytearray()
+    for offset in range(0, length, READ_CHUNK_SIZE):
+        chunk_len = min(READ_CHUNK_SIZE, length - offset)
+        data += link.read(address + offset, chunk_len)
+    return bytes(data)
+
+
+def merge_partial_sectors(link: FlashLink, image: bytes, address: int, sector_size: int):
+    """If `image` doesn't fill the sectors it lands in all the way to their
+    edges, reads back the existing data in those leading/trailing gaps and
+    folds it into a widened, sector-aligned buffer so the caller can erase
+    and rewrite whole sectors without losing what was already there. Must be
+    called before erasing. Returns (new_address, new_image); if the image
+    already exactly fills whole sectors, returns (address, image) unchanged."""
+    sector_start = (address // sector_size) * sector_size
+    sector_end = ((address + len(image) - 1) // sector_size + 1) * sector_size
+    lead_len = address - sector_start
+    trail_len = sector_end - (address + len(image))
+
+    if lead_len == 0 and trail_len == 0:
+        return address, image
+
+    print(f"Merge: preserving existing data outside the image within its sector(s) "
+          f"(reading {lead_len + trail_len} bytes from 0x{sector_start:06X}..0x{sector_end:06X} "
+          f"before erasing)...")
+    lead_data = read_range(link, sector_start, lead_len) if lead_len else b""
+    trail_data = read_range(link, address + len(image), trail_len) if trail_len else b""
+    return sector_start, lead_data + bytes(image) + trail_data
+
+
 def erase_chip(link: FlashLink):
     """Erases the entire chip and nothing else -- used when --chip-erase is
     given without an image to program."""
@@ -235,7 +269,7 @@ def erase_chip(link: FlashLink):
 
 
 def program(link: FlashLink, image: bytes, address: int, chip_erase: bool,
-            verify: bool, chunk_size: int):
+            verify: bool, chunk_size: int, merge: bool = False):
     status, mfr, dev, chip_size, sector_size = link.get_info(require_known=True)
     print_chip_info(status, mfr, dev, chip_size, sector_size)
 
@@ -247,10 +281,18 @@ def program(link: FlashLink, image: bytes, address: int, chip_erase: bool,
                   f"(ends at 0x{address + len(image):06X}), chip only holds "
                   f"{chip_size} bytes")
     if not chip_erase and address % sector_size != 0:
-        print(f"Note: address 0x{address:06X} is not sector-aligned "
-              f"(sector size is {sector_size} bytes) -- the whole sector containing "
-              f"it will still be erased, so any other data already in that sector "
-              f"will be lost too.")
+        if merge:
+            print(f"Note: address 0x{address:06X} is not sector-aligned "
+                  f"(sector size is {sector_size} bytes) -- other data already sharing "
+                  f"that sector will be preserved via --merge.")
+        else:
+            print(f"Note: address 0x{address:06X} is not sector-aligned "
+                  f"(sector size is {sector_size} bytes) -- the whole sector containing "
+                  f"it will still be erased, so any other data already in that sector "
+                  f"will be lost too.")
+
+    if merge:
+        address, image = merge_partial_sectors(link, image, address, sector_size)
 
     if chip_erase:
         print("Erasing entire chip (this takes longer but leaves nothing stale behind)...")
@@ -321,6 +363,13 @@ def main():
                           "sectors the image covers (slower, but guarantees a clean chip "
                           "with no leftover data past the image). If no image is given, "
                           "erases the chip and exits -- no programming or verification")
+    ap.add_argument("--merge", action="store_true",
+                     help="if --address isn't sector-aligned and/or the image doesn't fill "
+                          "out the rest of its last sector, read back the existing data in "
+                          "those leading/trailing gaps first and merge it back in, so other "
+                          "data already sharing the erased sectors isn't lost. Only valid "
+                          "when programming an image; incompatible with --chip-erase (which "
+                          "erases the whole chip regardless).")
     ap.add_argument("--no-verify", action="store_true", help="skip read-back verification")
     ap.add_argument("--chunk-size", type=int, default=WRITE_CHUNK_SIZE,
                      help="bytes of flash data per USB write command (default 256, max 508)")
@@ -337,6 +386,12 @@ def main():
 
     if args.chunk_size > 508:
         sys.exit("--chunk-size must be <= 508 (firmware payload cap minus 4-byte address)")
+
+    if args.merge and not args.image:
+        ap.error("--merge only applies when programming an image")
+    if args.merge and args.chip_erase:
+        ap.error("--merge and --chip-erase are mutually exclusive -- --chip-erase erases "
+                  "the whole chip anyway, so there's nothing to preserve")
 
     link = FlashLink(args.port)
     try:
@@ -360,7 +415,7 @@ def main():
             image = f.read()
 
         program(link, image, address=args.address, chip_erase=args.chip_erase,
-                verify=not args.no_verify, chunk_size=args.chunk_size)
+                verify=not args.no_verify, chunk_size=args.chunk_size, merge=args.merge)
         print("Done.")
     finally:
         link.close()

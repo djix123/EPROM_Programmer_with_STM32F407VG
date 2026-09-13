@@ -255,6 +255,13 @@ Options:
   are erased. If no `.bin` file is given, this erases the chip and
   exits -- e.g. `python host/program.py --port COM5 --chip-erase` wipes
   the chip without programming anything.
+- `--merge` -- if `--address` isn't sector-aligned and/or the image
+  doesn't fill out the rest of its last sector, read back the existing
+  data in those leading/trailing gaps first and merge it back in before
+  erasing/programming, so other data already sharing the erased sectors
+  isn't lost. Only valid when programming an image; mutually exclusive
+  with `--chip-erase` (which erases the whole chip regardless of what's
+  there).
 - `--no-verify` -- skip the read-back verification pass.
 - `--chunk-size N` -- bytes of flash data per USB write command
   (default 256, max 508). Lower it if you see CRC errors on a flaky
