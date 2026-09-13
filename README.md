@@ -16,14 +16,18 @@ just plug in whichever one you have.
 This `stm32f401ce` branch is a port from the original STM32F407VE/VG
 target (100-pin LQFP, two full 16-pin ports free for the bus) down to
 the much smaller STM32F401CE (48-pin LQFP48/UFQFPN48 -- the chip on
-"Black Pill"-style hobby boards). **This port has not yet been
-bench-verified against physical F401CE hardware** -- the pin map and
-GPIO setup were re-derived carefully from the STM32F401 datasheet (see
-the FT/package notes below), but only the original F407 build has the
-"confirmed against real hardware" track record described next. Treat
-this branch as needing the same chip-ID-readback / erase / program /
-verify bring-up pass the F407 build already went through before relying
-on it.
+"Black Pill"-style hobby boards). The linker script is sized for the
+smaller **STM32F401CC (256KB flash / 64KB RAM)** rather than the CE's
+512KB/96KB -- the CC's memory map is a strict subset of the CE's, so a
+build against these more conservative sizes runs unmodified on either
+part, and this branch now targets both the STM32F401CC and STM32F401CE.
+**This port has not yet been bench-verified against physical
+hardware** -- the pin map and GPIO setup were re-derived carefully from
+the STM32F401 datasheet (see the FT/package notes below), but only the
+original F407 build has the "confirmed against real hardware" track
+record described next. Treat this branch as needing the same
+chip-ID-readback / erase / program / verify bring-up pass the F407
+build already went through before relying on it.
 
 The F407 build was tested working on real hardware: an STM32F407VGT6
 board bit-banging a socketed AM29F040B, exercised end-to-end from
@@ -181,10 +185,14 @@ two sharp edges worth knowing if you repeat it (or re-generate again):
    bug that doesn't show up as a build error -- it links fine either
    way since this firmware image easily fits in either memory map -- it
    just quietly gives the linker permission to place code/data outside
-   the real F401CE's actual flash/RAM, which would only bite on
+   the real chip's actual flash/RAM, which would only bite on
    hardware. **After any MCU retarget, always check
    `cmake --build build/Debug` output's final "Memory region" table
    matches your actual chip's flash/RAM size**, not just that it links.
+   (`STM32F401xx_FLASH.ld` is now deliberately sized for the smaller
+   STM32F401CC -- 256KB flash / 64KB RAM -- rather than the CE's
+   512KB/96KB, specifically so the same build also fits the CE without
+   needing a second linker script.)
 3. `cmake/stm32cubemx/CMakeLists.txt` (the one file CubeMX *does* fully
    own) already got the `STM32F401xE` define and
    `startup_stm32f401xe.s` correctly on regeneration -- no manual fix
@@ -199,11 +207,13 @@ two sharp edges worth knowing if you repeat it (or re-generate again):
    `STM32F401.svd` -- see "Flashing / debugging" below.
 
 This branch's build has been verified to actually compile and link
-against the correct F401CE memory map (`cmake --build`, checked into
-CI-equivalent conditions locally). It has **not** been bench-verified
-against physical hardware yet -- see the top of this README -- run the
-same chip-ID / erase / program / verify pass the F407 build already
-passed before trusting it with real data.
+against the STM32F401CC memory map (`cmake --build`, checked into
+CI-equivalent conditions locally) -- which, being a strict subset of
+the CE's, also fits the CE, so this same build targets both parts. It
+has **not** been bench-verified against physical hardware yet -- see
+the top of this README -- run the same chip-ID / erase / program /
+verify pass the F407 build already passed before trusting it with real
+data.
 
 ## USB CDC setup (do this in CubeMX)
 
