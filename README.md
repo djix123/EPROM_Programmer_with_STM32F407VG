@@ -262,6 +262,10 @@ Options:
   isn't lost. Only valid when programming an image; mutually exclusive
   with `--chip-erase` (which erases the whole chip regardless of what's
   there).
+- `--force` -- skip the confirmation prompt shown when `--address` isn't
+  sector-aligned and `--merge` isn't given (proceeds straight to
+  erasing, discarding whatever else shares that sector). Has no effect
+  when `--merge` is used, since that path never prompts.
 - `--no-verify` -- skip the read-back verification pass.
 - `--chunk-size N` -- bytes of flash data per USB write command
   (default 256, max 508). Lower it if you see CRC errors on a flaky

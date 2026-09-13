@@ -269,7 +269,7 @@ def erase_chip(link: FlashLink):
 
 
 def program(link: FlashLink, image: bytes, address: int, chip_erase: bool,
-            verify: bool, chunk_size: int, merge: bool = False):
+            verify: bool, chunk_size: int, merge: bool = False, force: bool = False):
     status, mfr, dev, chip_size, sector_size = link.get_info(require_known=True)
     print_chip_info(status, mfr, dev, chip_size, sector_size)
 
@@ -290,6 +290,10 @@ def program(link: FlashLink, image: bytes, address: int, chip_erase: bool,
                   f"(sector size is {sector_size} bytes) -- the whole sector containing "
                   f"it will still be erased, so any other data already in that sector "
                   f"will be lost too.")
+            if not force:
+                answer = input("Continue and erase that sector anyway? [y/N] ").strip().lower()
+                if answer not in ("y", "yes"):
+                    sys.exit("Aborted.")
 
     if merge:
         address, image = merge_partial_sectors(link, image, address, sector_size)
@@ -370,6 +374,10 @@ def main():
                           "data already sharing the erased sectors isn't lost. Only valid "
                           "when programming an image; incompatible with --chip-erase (which "
                           "erases the whole chip regardless).")
+    ap.add_argument("--force", action="store_true",
+                     help="skip the confirmation prompt shown when --address isn't "
+                          "sector-aligned and --merge isn't given (proceeds straight to "
+                          "erasing, discarding whatever else shares that sector)")
     ap.add_argument("--no-verify", action="store_true", help="skip read-back verification")
     ap.add_argument("--chunk-size", type=int, default=WRITE_CHUNK_SIZE,
                      help="bytes of flash data per USB write command (default 256, max 508)")
@@ -415,7 +423,8 @@ def main():
             image = f.read()
 
         program(link, image, address=args.address, chip_erase=args.chip_erase,
-                verify=not args.no_verify, chunk_size=args.chunk_size, merge=args.merge)
+                verify=not args.no_verify, chunk_size=args.chunk_size, merge=args.merge,
+                force=args.force)
         print("Done.")
     finally:
         link.close()
