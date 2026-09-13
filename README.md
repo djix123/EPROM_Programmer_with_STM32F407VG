@@ -146,50 +146,61 @@ constant is the first thing to increase; if things work reliably and you
 want more speed, it's also the first thing to try tightening, ideally
 while watching the OE#/WE#/data waveforms on a scope.
 
-## ⚠️ Porting the CubeMX-managed build (do this yourself before building)
+## ⚠️ Porting the CubeMX-managed build
 
-Everything above (pin map, GPIO setup) lives in hand-written
-`sst39sf040.c` and is already done on this branch. What is **not**
-done -- and can't safely be done by hand-editing generated files, per
-this project's own convention of treating CubeMX output as generated
-(see `CLAUDE.md`) -- is retargeting the CubeMX-owned build: the device
-startup file, linker script, HAL config, and clock tree are still the
-F407's. You need STM32CubeMX (or STM32CubeIDE) installed locally to
-finish this:
+The pin map/GPIO setup lives in hand-written `sst39sf040.c` (already
+done on this branch). The CubeMX-owned build -- device startup file,
+linker script, HAL config, clock tree -- has also now been retargeted,
+but the CubeMX version in use here had **no "Change target MCU/Board"
+option**, so instead a brand-new `EPROM_Programmer_with_STM32F401CE.ioc`
+was generated alongside the original `EPROM_Programmer_with_STM32F407VG.ioc`
+into this same project directory. That's a reasonable path, but it has
+two sharp edges worth knowing if you repeat it (or re-generate again):
 
-1. Open `EPROM_Programmer_with_STM32F407VG.ioc` in STM32CubeMX.
-2. **Use "Change target MCU/Board"** (not a hand-edit of the `.ioc`) and
-   pick your exact part -- `STM32F401CEU6` (UFQFPN48, WeAct Black Pill
-   V3.0 and similar) or `STM32F401CET6` (LQFP48) if that's what you
-   have. This is the step that keeps the `.ioc` internally consistent;
-   don't try to retype `Mcu.Name`/`Mcu.CPN` by hand.
-3. **Clock Configuration tab**: set the HSE crystal value to match your
-   board (commonly 25MHz on WeAct Black Pill boards -- check your
-   board's schematic, don't assume), then use CubeMX's **"Resolve Clock
-   Configuration"** button to retarget SYSCLK to the F401's 84MHz max
-   (vs the F407's 168MHz). CubeMX will keep the 48MHz USB (PLLQ) domain
-   exact -- that's a hard constraint it enforces automatically.
-   `sst39sf040.c`'s `delay_us()` reads `SystemCoreClock` at runtime, so
-   it doesn't need any code change for the new frequency; the
-   `BUS_DELAY_CYCLES` comment above already reflects the F401's 84MHz.
-4. **Connectivity → USB_OTG_FS** and **Middleware → USB_DEVICE** should
-   already be configured from the existing `.ioc` (Device_Only / CDC) --
-   verify they carried over, since PA11/PA12 exist identically on this
-   package.
-5. Generate code. This regenerates `startup_stm32f407xx.s` →
-   `startup_stm32f401xe.s` (or similar), a new F401-sized linker script,
-   `stm32f4xx_hal_conf.h`, and `USB_DEVICE/App/usbd_cdc_if.c` --
-   **which means it wipes the one hand-patch this project needs in that
-   last file.** Immediately reapply the `FlashProto_OnUsbRx(Buf, *Len);`
-   line documented in "USB CDC setup" below before building.
-6. Update `cmake/stm32cubemx/CMakeLists.txt`'s `STM32F407xx` define and
-   startup-file path if CubeMX's CMake integration doesn't already
-   rewrite them for you, and update `CMakePresets.json`/`openocd.cfg` if
-   they reference the old part number anywhere.
-7. Build (see "Build" below) and, since this port hasn't been bench
-   -verified yet (see the top of this README), run the same chip-ID /
-   erase / program / verify bring-up pass the F407 build already passed
-   before trusting it with real data.
+1. **Generating from a new `.ioc` overwrites `Src/main.c` with a fresh
+   CubeMX template**, silently discarding the `SST_Init()` /
+   `FlashProto_Poll()` calls this project needs -- exactly what happened
+   here and had to be restored by hand afterward. Those calls now live
+   inside CubeMX's own `/* USER CODE BEGIN ... END */` markers in
+   `main.c` (`SST_Init()` in the `SysInit` block, `FlashProto_Poll()` in
+   the `WHILE` block), so a *future* "Generate Code" from the same
+   `.ioc` should preserve them automatically -- but always diff `main.c`
+   after regenerating to be sure, and reapply the `usbd_cdc_if.c` patch
+   from "USB CDC setup" below (whether that one survives a given
+   regeneration is inconsistent -- it happened to carry over this time,
+   but check it every time regardless).
+2. **CubeMX does *not* own `cmake/gcc-arm-none-eabi.cmake` or
+   `cmake/starm-clang.cmake`** -- both hardcode the linker script
+   filename (`-T ".../STM32F407xx_FLASH.ld"`) as a literal string, and
+   CubeMX's code generation never touches them. Generating the new
+   `.ioc` correctly produced `STM32F401xx_FLASH.ld` (512KB flash/96KB
+   RAM, no CCM region -- matches the real F401CE) alongside the old
+   `STM32F407xx_FLASH.ld` (1MB/128KB+64KB CCM), but **the build kept
+   silently linking against the old F407 script** until both `.cmake`
+   files were hand-edited to point at the new one. This is the kind of
+   bug that doesn't show up as a build error -- it links fine either
+   way since this firmware image easily fits in either memory map -- it
+   just quietly gives the linker permission to place code/data outside
+   the real F401CE's actual flash/RAM, which would only bite on
+   hardware. **After any MCU retarget, always check
+   `cmake --build build/Debug` output's final "Memory region" table
+   matches your actual chip's flash/RAM size**, not just that it links.
+3. `cmake/stm32cubemx/CMakeLists.txt` (the one file CubeMX *does* fully
+   own) already got the `STM32F401xE` define and
+   `startup_stm32f401xe.s` correctly on regeneration -- no manual fix
+   needed there, unlike the two files above.
+4. The old `EPROM_Programmer_with_STM32F407VG.ioc`,
+   `STM32F407xx_FLASH.ld`, and `startup_stm32f407xx.s` are now unused on
+   this branch (nothing references them) but were left in place rather
+   than deleted -- remove them if you're confident this branch will
+   never need to build for F407 again.
+
+This branch's build has been verified to actually compile and link
+against the correct F401CE memory map (`cmake --build`, checked into
+CI-equivalent conditions locally). It has **not** been bench-verified
+against physical hardware yet -- see the top of this README -- run the
+same chip-ID / erase / program / verify pass the F407 build already
+passed before trusting it with real data.
 
 ## USB CDC setup (do this in CubeMX)
 

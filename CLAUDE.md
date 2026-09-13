@@ -39,10 +39,14 @@ the board and exercising it against real hardware (chip ID readback,
 program/verify round-trip) via the host tool.
 
 Flashing/debugging is via OpenOCD + ST-Link, configured for CLion's
-embedded debugger. `openocd.cfg` (stlink/stm32f4x config) and
-`STM32F407.svd` (peripheral register map for the SFR view) are the only
-in-repo pieces of that setup — see README.md "Flashing / debugging
-(OpenOCD + ST-Link)" for the CLion config and a CLI flashing example.
+embedded debugger. `openocd.cfg` (stlink/stm32f4x config, generic to the
+whole F4 family so it needed no change for this branch) and
+`STM32F407.svd` (peripheral register map for the SFR view — still the
+F407's; harmless for flashing/running, but expect wrong register names
+in CLion's SFR view until an STM32F401 SVD is dropped in to replace it)
+are the only in-repo pieces of that setup — see README.md "Flashing /
+debugging (OpenOCD + ST-Link)" for the CLion config and a CLI flashing
+example.
 
 Host tool (after flashing):
 
@@ -130,8 +134,18 @@ for the one deliberate patch documented below.
   F407's 168MHz). It's the first thing to touch when tuning for
   reliability (increase) vs. speed (decrease) — see README "What to
   extend next".
-- **The CubeMX-managed build (startup file, linker script, HAL config,
-  clock tree) is still the F407's** — retargeting it requires opening
-  the `.ioc` in STM32CubeMX and regenerating (see README "Porting the
-  CubeMX-managed build"), not hand-editing generated files. Only the
-  hand-written `sst39sf040.c` pin map has actually been ported so far.
+- **The CubeMX-managed build has been retargeted** to F401CE (new
+  `EPROM_Programmer_with_STM32F401CE.ioc`, `startup_stm32f401xe.s`,
+  `STM32F401xx_FLASH.ld` — 512KB flash/96KB RAM, no CCM region) — but
+  two files CubeMX does *not* own, `cmake/gcc-arm-none-eabi.cmake` and
+  `cmake/starm-clang.cmake`, hardcode the linker script filename as a
+  literal string and had to be hand-fixed after regeneration; a build
+  against the wrong linker script still links successfully (this image
+  fits either memory map) so it doesn't surface as an error — always
+  check the build's final "Memory region" sizes match the real chip
+  after any future MCU retarget. See README "Porting the CubeMX-managed
+  build" for the full gotcha list, including that regenerating from a
+  new `.ioc` wipes `Src/main.c`'s `SST_Init()`/`FlashProto_Poll()` calls
+  (now restored inside CubeMX's `USER CODE` markers so a future
+  regeneration should preserve them — verify by diffing `main.c`
+  anyway).
