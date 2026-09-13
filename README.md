@@ -181,6 +181,25 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
+### Changelog
+
+- **v0.9.2** -- `host/program.py`: add `--merge`, which reads back and
+  preserves existing data in the leading/trailing gaps of a
+  non-sector-aligned or partial-sector write instead of erasing it; add
+  a confirmation prompt (skippable with `--force`) before a
+  non-sector-aligned write erases a sector without `--merge`.
+- **v0.9.1** -- `host/program.py`: `--chip-erase` no longer requires an
+  image -- given alone, it erases the whole chip and exits. Also fixes
+  a latent bug where a real chip/sector erase on the AM29F040B could
+  exceed the host's fixed 3s serial read timeout and be misreported as
+  a dropped connection; erase commands now use a timeout matching the
+  firmware's own erase timeout budget (`chip_table[]` in
+  `Src/sst39sf040.c`).
+- **v0.9.0** -- Initial working release: bit-banged SST39SF040/AM29F040B
+  flash driver, USB-CDC framed protocol, `host/program.py` PC-side tool,
+  OpenOCD/ST-Link debugging setup, and this release-automation workflow.
+  Tested against real AM29F040B hardware.
+
 ## Flashing / debugging (OpenOCD + ST-Link)
 
 The repo includes `openocd.cfg` and `STM32F407.svd` for flashing and
