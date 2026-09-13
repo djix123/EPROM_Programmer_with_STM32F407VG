@@ -163,6 +163,20 @@ cmake --build build/Debug   # or build/Release
 This produces `build/Debug/EPROM_Programmer_with_STM32F407VG.elf`,
 which the flashing commands below expect.
 
+### Releases
+
+`.github/workflows/release.yml` builds the firmware (Release preset)
+in CI and, when the trigger is a tag matching `v*.*.*`, publishes a
+GitHub Release with the built `.elf`, `.bin`, `.hex`, and
+`host/program.py` attached. It can also be run manually
+(workflow_dispatch) as a build-only sanity check without cutting a
+release. To cut one:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
 ## Flashing / debugging (OpenOCD + ST-Link)
 
 The repo includes `openocd.cfg` and `STM32F407.svd` for flashing and
