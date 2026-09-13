@@ -4,11 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Firmware for an STM32F407VE/VG that reads/erases/programs an SST39SF040
-or AM29F040B parallel NOR flash chip by bit-banging its parallel bus
-directly over GPIO (no FSMC), controlled from a PC over USB-CDC (virtual
-COM port). A PC-side tool pushes a `.bin` file over the serial link to
-erase, write, and verify it, or just query chip ID/size/sector info.
+Firmware that reads/erases/programs an SST39SF040 or AM29F040B parallel
+NOR flash chip by bit-banging its parallel bus directly over GPIO (no
+FSMC), controlled from a PC over USB-CDC (virtual COM port). A PC-side
+tool pushes a `.bin` file over the serial link to erase, write, and
+verify it, or just query chip ID/size/sector info.
+
+**This `stm32f401ce` branch targets an STM32F401CE** (48-pin
+LQFP48/UFQFPN48 -- the chip on "Black Pill"-style hobby boards), ported
+from the original STM32F407VE/VG target (100-pin LQFP100) that `main`
+still targets. The port has not been bench-verified against physical
+F401CE hardware yet -- see the top of README.md. Two consequences of
+the much smaller package shape the code differently here than on
+`main`: **Port D and Port E don't exist on this package at all**, and
+Port C is only partially present (PC0-3, PC13-15), so the bus is wired
+across Ports A/B/C instead of D/E (see the pin map in
+`sst39sf040.c`/README.md "Wiring"). And **every GPIO on this package is
+5V-tolerant**, so — unlike the F407 side, where FT status had to be
+checked pin-by-pin — there was no non-FT subset to dodge when choosing
+the new pin map.
 
 ## Build
 
@@ -47,11 +61,13 @@ prefer regenerating from the `.ioc` file over hand-editing it, except
 for the one deliberate patch documented below.
 
 - **`sst39sf040.h/.c`** — low-level flash driver. Bit-bangs the 19-bit
-  address bus and 8-bit data bus directly over GPIO ports D and E (see
-  the pin table in README.md and the comment block at the top of the
-  `.c` file for the exact mapping — it's chosen so the whole low
-  address word is one GPIOD register write and the data byte is one
-  GPIOE register write). Issues the SST/AMD JEDEC command sequences
+  address bus and 8-bit data bus directly over GPIO ports A, B, and C
+  on this branch (see the pin table in README.md and the comment block
+  at the top of the `.c` file for the exact mapping — it's chosen so
+  the whole low address word is one GPIOB register write and the data
+  byte is one GPIOA register write, with the three control lines on
+  GPIOC since there was no room left on GPIOA once USB/SWD claimed
+  four of its bits). Issues the SST/AMD JEDEC command sequences
   (unlock, program, erase) and does DQ7 data-polling to detect
   completion. Chip identity (SST39SF040 vs AM29F040B — different sector
   sizes and erase timeouts) is auto-detected at runtime via
@@ -96,15 +112,26 @@ for the one deliberate patch documented below.
 
 ## Hardware constraints that shape the code
 
-- **LQFP100 has no Port F or Port G** — this is *why* the design
-  bit-bangs GPIO on Ports D/E instead of using FSMC's normal non-muxed
-  address-bus mode. Don't "simplify" by reintroducing FSMC without
-  accounting for this.
+- **STM32F401CE's 48-pin package (LQFP48/UFQFPN48) has no Port D or
+  Port E at all, and only PC0-3/PC13-15 of Port C** — this is *why* the
+  bus is split across Ports A/B/C instead of the F407 branch's D/E, and
+  *why* it can't just reuse FSMC's non-muxed address-bus mode either
+  (no full second port free once USB/SWD claim four bits of Port A).
+  Don't "simplify" by reintroducing FSMC or assuming a full Port
+  C/D/E without re-checking this package's actual pinout.
 - **The flash chip is 5V-only**, powered from a separate rail from the
-  STM32's 3.3V; the GPIOs used are 5V-tolerant ("FT") pins by design —
-  if pins are ever reassigned, they must stay within the FT set.
+  STM32's 3.3V. Unlike the F407 branch, every GPIO on this package is
+  5V-tolerant ("FT"), so there's no FT-subset constraint on where the
+  bus pins go — just don't reuse PA11/PA12 (USB), PA13/PA14 (SWD), or
+  PH0/PH1 (HSE crystal, if populated), which this driver already avoids.
 - **`BUS_DELAY_CYCLES`** in `sst39sf040.c` is a deliberately
   conservative bus-timing margin (not bench-verified against a specific
-  chip's speed grade). It's the first thing to touch when tuning for
+  chip's speed grade), sized against this MCU's 84MHz max clock (vs the
+  F407's 168MHz). It's the first thing to touch when tuning for
   reliability (increase) vs. speed (decrease) — see README "What to
   extend next".
+- **The CubeMX-managed build (startup file, linker script, HAL config,
+  clock tree) is still the F407's** — retargeting it requires opening
+  the `.ioc` in STM32CubeMX and regenerating (see README "Porting the
+  CubeMX-managed build"), not hand-editing generated files. Only the
+  hand-written `sst39sf040.c` pin map has actually been ported so far.

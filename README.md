@@ -1,4 +1,4 @@
-# SST39SF040 / AM29F040B programmer for STM32F407VE/VG (USB-CDC controlled)
+# SST39SF040 / AM29F040B programmer for STM32F401CE (USB-CDC controlled)
 
 Reads/erases/programs an SST39SF040 **or AM29F040B** parallel flash chip
 by bit-banging its parallel bus directly over GPIO, controlled from a PC
@@ -13,10 +13,22 @@ picks the right sector size (SST39SF040: 4KB sectors; AM29F040B: 64KB
 sectors) and erase timeouts -- no rebuilding or rewiring to switch chips,
 just plug in whichever one you have.
 
-Tested working on real hardware: an STM32F407VGT6 board bit-banging a
-socketed AM29F040B, exercised end-to-end from `host/program.py` --
-chip ID readback, chip/sector erase, program, and read-verify all
-confirmed against the physical chip.
+This `stm32f401ce` branch is a port from the original STM32F407VE/VG
+target (100-pin LQFP, two full 16-pin ports free for the bus) down to
+the much smaller STM32F401CE (48-pin LQFP48/UFQFPN48 -- the chip on
+"Black Pill"-style hobby boards). **This port has not yet been
+bench-verified against physical F401CE hardware** -- the pin map and
+GPIO setup were re-derived carefully from the STM32F401 datasheet (see
+the FT/package notes below), but only the original F407 build has the
+"confirmed against real hardware" track record described next. Treat
+this branch as needing the same chip-ID-readback / erase / program /
+verify bring-up pass the F407 build already went through before relying
+on it.
+
+The F407 build was tested working on real hardware: an STM32F407VGT6
+board bit-banging a socketed AM29F040B, exercised end-to-end from
+`host/program.py` -- chip ID readback, chip/sector erase, program, and
+read-verify all confirmed against the physical chip.
 
 ## Architecture
 
@@ -32,81 +44,152 @@ confirmed against the physical chip.
 
 ## ⚠️ Package note
 
-STM32F407VE**T** and STM32F407VG**T** both use the 100-pin LQFP100
-package -- "V" is the pin-count code, "E"/"G" only changes Flash size,
-so they're pin-identical and this project works unmodified on either.
+STM32F401CE ships as a 48-pin part -- LQFP48 (e.g. STM32F401CET6) or
+UFQFPN48 (e.g. STM32F401CEU6, the marking on WeAct "Black Pill V3.0"
+style boards). Both packages share the same pinout, so everything below
+applies to either.
 
-LQFP100 itself has a real limitation worth knowing about even though it
-doesn't affect this design: **Port F and Port G don't exist on this
-package** (confirmed against ST's pin tables in DS8626), which rules out
-driving the flash chip's address bus through FSMC's normal non-muxed
-mode. This project sidesteps that entirely by not using FSMC at all --
-every address/data/control line is a plain bit-banged GPIO pin on Ports
-D and E, both of which are fully present on LQFP100.
+The 48-pin package is a much bigger constraint than the F407's LQFP100:
+**Port D and Port E don't exist on it at all**, and **Port C is only
+partially present** (PC0-PC3 and PC13-PC15 -- 7 of its 16 pins). Only
+Port A and Port B are fully broken out (16 pins each). That rules out
+the F407 driver's original "one full port for the low address word,
+another full port for data + high address + control" layout outright --
+there's no second full 16-pin port left once Port A gives up 4 pins to
+USB (PA11/PA12) and SWD (PA13/PA14). This branch's layout instead uses
+all of Port B for the low address word (mirroring the F407's dedicated
+address port) and splits data + high address across the free bits of
+Port A, with the three control lines moved to their own footprint on
+Port C -- see the comment block at the top of `sst39sf040.c` for the
+exact bit layout and why.
+
+**Don't assume this generalizes to every 48-pin STM32F4.** The pin
+counts above (Port C = PC0-3 + PC13-15, no Port D/E) are specific to the
+STM32F401's LQFP48/UFQFPN48; other F4-family parts in a 48-pin package
+can differ.
 
 ## ⚠️ Power / voltage
 
 The SST39SF040 is a **5V-only part**. Power it from a separate 5V rail,
-not the STM32's 3.3V. The GPIO pins used below are 5V-tolerant ("FT") on
-the F407, so the chip driving 5V back onto them during reads is safe.
-Decouple VCC/GND at the chip with a 0.1µF cap, and tie any unused control
-pins per the datasheet rather than leaving them floating.
+not the STM32's 3.3V. Good news for this target: **every GPIO pin on
+the STM32F401's 48-pin package is 5V-tolerant ("FT")** -- confirmed
+against ST's DS10086 pin definition table -- except PC14/PC15/PH0/PH1
+when actually configured as an oscillator input, which doesn't apply to
+any pin used below. That's a meaningfully simpler story than the F407,
+where FT status varies pin-by-pin and had to be checked individually;
+here, the chip driving 5V back onto any of these pins during reads is
+safe by construction, not by careful pin selection. Decouple VCC/GND at
+the chip with a 0.1µF cap, and tie any unused control pins per the
+datasheet rather than leaving them floating.
 
 ## Wiring (bit-banged GPIO, no FSMC, no external ICs needed)
 
 Pin layout is chosen so the whole 16-bit low address word is one single
-GPIOD register write, and the data byte is one register on GPIOE --
+GPIOB register write, and the data byte is one register on GPIOA --
 see the comment block at the top of `sst39sf040.c` for exactly how.
 
 | Flash pin | STM32 pin | Flash pin | STM32 pin |
 |---|---|---|---|
-| A0  | PD0  | A11 | PD11 |
-| A1  | PD1  | A12 | PD12 |
-| A2  | PD2  | A13 | PD13 |
-| A3  | PD3  | A14 | PD14 |
-| A4  | PD4  | A15 | PD15 |
-| A5  | PD5  | A16 | PE8 |
-| A6  | PD6  | A17 | PE9 |
-| A7  | PD7  | A18 | PE10 |
-| A8  | PD8  | D0  | PE0 |
-| A9  | PD9  | D1  | PE1 |
-| A10 | PD10 | D2  | PE2 |
-| | | D3  | PE3 |
-| | | D4  | PE4 |
-| | | D5  | PE5 |
-| | | D6  | PE6 |
-| | | D7  | PE7 |
+| A0  | PB0  | A11 | PB11 |
+| A1  | PB1  | A12 | PB12 |
+| A2  | PB2  | A13 | PB13 |
+| A3  | PB3  | A14 | PB14 |
+| A4  | PB4  | A15 | PB15 |
+| A5  | PB5  | A16 | PA8 |
+| A6  | PB6  | A17 | PA9 |
+| A7  | PB7  | A18 | PA10 |
+| A8  | PB8  | D0  | PA0 |
+| A9  | PB9  | D1  | PA1 |
+| A10 | PB10 | D2  | PA2 |
+| | | D3  | PA3 |
+| | | D4  | PA4 |
+| | | D5  | PA5 |
+| | | D6  | PA6 |
+| | | D7  | PA7 |
 
 | Signal | STM32 pin |
 |---|---|
-| OE# | PE11 |
-| WE# | PE12 |
-| CE# | PE13 |
+| OE# | PC0 |
+| WE# | PC1 |
+| CE# | PC2 |
 
 CE# is driven low once at startup and left there for the whole session
 (this is the only device on the bus, so there's no need to toggle chip
 select per access) -- OE#/WE#/CE# do the actual per-cycle work.
 
+**Check your specific board before wiring.** PB2 doubles as BOOT1
+(sampled at reset only when BOOT0 is pulled high to select system/RAM
+bootloader mode; irrelevant with BOOT0 held low for normal flash boot,
+which is this project's default). PC13 often carries an onboard LED or
+button on Black Pill-style boards -- using it here (it isn't, in the
+table above) would fight that. PA11-PA14 (USB D-/D+, SWDIO/SWCLK) and
+PH0/PH1 (HSE crystal, if your board has one) are reserved and must not
+be reused for the bus -- this driver never touches them.
+
 USB: PA11 (USB_DM) / PA12 (USB_DP), device-only OTG FS -- CubeMX wires
 these automatically when you enable the peripheral below.
 
-**Check your specific board before wiring.** Some "Black F407" style
-dev boards route an onboard microSD slot's SDIO_CMD line to PD2, which
-this design uses for A8. If your board has one of those and you don't
-want to desolder/reroute it, move A8 to a spare pin (PE14 or PE15 are
-free) and update `sst39sf040.c`'s `set_address()`/GPIO init accordingly
--- just make sure whatever you pick isn't also claimed by something
-else on your specific board.
-
-**A note on confidence:** the pin-existence facts above (which ports are
-present on LQFP100) are verified against ST's official datasheet. The
-`BUS_DELAY_CYCLES` margin in `sst39sf040.c` (~180ns at 168MHz between
-each bus phase) is a deliberately conservative estimate against typical
+**A note on confidence:** the pin-existence and FT facts above (which
+ports/pins are present, and 5V-tolerant, on the LQFP48/UFQFPN48 package)
+are drawn from ST's official STM32F401 datasheet (DS10086) pin
+definition table. Unlike the LQFP100 facts on the F407 side of this
+project, they have not additionally been cross-checked against a
+physical board's silkscreen/schematic for this specific target -- if
+your exact board (e.g. a Black Pill clone) documents a different pin
+assignment for something you're relying on here (LED, button, crystal),
+trust your board's own schematic over this table. The `BUS_DELAY_CYCLES`
+margin in `sst39sf040.c` (~360ns at the F401's max 84MHz between each
+bus phase) is a deliberately conservative estimate against typical
 70-150ns flash timings, not something bench-verified against your exact
 chip's speed grade -- if you see intermittent read/write errors, that
 constant is the first thing to increase; if things work reliably and you
 want more speed, it's also the first thing to try tightening, ideally
 while watching the OE#/WE#/data waveforms on a scope.
+
+## ⚠️ Porting the CubeMX-managed build (do this yourself before building)
+
+Everything above (pin map, GPIO setup) lives in hand-written
+`sst39sf040.c` and is already done on this branch. What is **not**
+done -- and can't safely be done by hand-editing generated files, per
+this project's own convention of treating CubeMX output as generated
+(see `CLAUDE.md`) -- is retargeting the CubeMX-owned build: the device
+startup file, linker script, HAL config, and clock tree are still the
+F407's. You need STM32CubeMX (or STM32CubeIDE) installed locally to
+finish this:
+
+1. Open `EPROM_Programmer_with_STM32F407VG.ioc` in STM32CubeMX.
+2. **Use "Change target MCU/Board"** (not a hand-edit of the `.ioc`) and
+   pick your exact part -- `STM32F401CEU6` (UFQFPN48, WeAct Black Pill
+   V3.0 and similar) or `STM32F401CET6` (LQFP48) if that's what you
+   have. This is the step that keeps the `.ioc` internally consistent;
+   don't try to retype `Mcu.Name`/`Mcu.CPN` by hand.
+3. **Clock Configuration tab**: set the HSE crystal value to match your
+   board (commonly 25MHz on WeAct Black Pill boards -- check your
+   board's schematic, don't assume), then use CubeMX's **"Resolve Clock
+   Configuration"** button to retarget SYSCLK to the F401's 84MHz max
+   (vs the F407's 168MHz). CubeMX will keep the 48MHz USB (PLLQ) domain
+   exact -- that's a hard constraint it enforces automatically.
+   `sst39sf040.c`'s `delay_us()` reads `SystemCoreClock` at runtime, so
+   it doesn't need any code change for the new frequency; the
+   `BUS_DELAY_CYCLES` comment above already reflects the F401's 84MHz.
+4. **Connectivity → USB_OTG_FS** and **Middleware → USB_DEVICE** should
+   already be configured from the existing `.ioc` (Device_Only / CDC) --
+   verify they carried over, since PA11/PA12 exist identically on this
+   package.
+5. Generate code. This regenerates `startup_stm32f407xx.s` →
+   `startup_stm32f401xe.s` (or similar), a new F401-sized linker script,
+   `stm32f4xx_hal_conf.h`, and `USB_DEVICE/App/usbd_cdc_if.c` --
+   **which means it wipes the one hand-patch this project needs in that
+   last file.** Immediately reapply the `FlashProto_OnUsbRx(Buf, *Len);`
+   line documented in "USB CDC setup" below before building.
+6. Update `cmake/stm32cubemx/CMakeLists.txt`'s `STM32F407xx` define and
+   startup-file path if CubeMX's CMake integration doesn't already
+   rewrite them for you, and update `CMakePresets.json`/`openocd.cfg` if
+   they reference the old part number anywhere.
+7. Build (see "Build" below) and, since this port hasn't been bench
+   -verified yet (see the top of this README), run the same chip-ID /
+   erase / program / verify bring-up pass the F407 build already passed
+   before trusting it with real data.
 
 ## USB CDC setup (do this in CubeMX)
 
@@ -114,9 +197,8 @@ Rolling a USB device stack by hand is a bad idea -- ST's CubeMX-generated
 middleware is the standard, well-tested path, so use it and plug our
 protocol code into it:
 
-1. Open the project in STM32CubeMX (or create one for your exact part,
-   STM32F407VETx or STM32F407VGTx, if you don't have one yet -- they're
-   pin-identical for everything in this project).
+1. Open the project in STM32CubeMX (already retargeted per the section
+   above if you're building for STM32F401CE).
 2. **Connectivity → USB_OTG_FS**: set Mode to `Device_Only`.
 3. **Middleware → USB_DEVICE**: set Class to `Communication Device Class
    (Virtual Port Com)`.

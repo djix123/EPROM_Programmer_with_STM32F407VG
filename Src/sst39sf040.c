@@ -4,39 +4,58 @@
 /* ---------------------------------------------------------------------
  * Bit-banged GPIO driver (no FSMC).
  *
+ * STM32F401CE target note: this MCU's 48-pin package (LQFP48/UFQFPN48)
+ * has no Port D or Port E at all, and Port C is only partially present
+ * (PC0-PC3, PC13-PC15) -- unlike the LQFP100 STM32F407VE/VG this driver
+ * originally targeted, where the full Ports D and E gave two whole
+ * 16-pin ports to dedicate to the bus. The layout below re-derives the
+ * same "one port write per bus phase" trick using Ports A/B/C instead.
+ * It happens that on this package *every* GPIO is 5V-tolerant (FT) --
+ * see the FT rationale in README.md -- so, unlike the F407 port, there
+ * was no need to dodge non-FT pins when choosing this layout.
+ *
  * Pin map, chosen so the address bus is one single-instruction port
  * write and the data byte is another:
  *
- *   GPIOD (all 16 pins, dedicated) = A0-A15, always output.
- *       One write to GPIOD->ODR sets the entire low address word.
+ *   GPIOB (all 16 pins, dedicated) = A0-A15, always output.
+ *       One write to GPIOB->ODR sets the entire low address word.
  *
- *   GPIOE:
+ *   GPIOA:
  *     bits 0-7   = D0-D7  (bidirectional: input while reading, output
  *                  while writing -- switched via MODER)
  *     bits 8-10  = A16,A17,A18 (always output)
- *     bits 11-13 = OE#, WE#, CE# (always output, active low)
- *     bits 14-15 = unused
- *   A16-A18 and the control lines are set via BSRR (atomic set/reset of
- *   just those bits) so they never disturb the data pins living on the
- *   same port.
+ *     bits 11-12 = USB_OTG_FS (D-/D+) -- CubeMX-owned, untouched here
+ *     bits 13-14 = SWDIO/SWCLK -- untouched here, keeps hardware debug
+ *     bit  15    = unused
+ *   A16-A18 is set via BSRR (atomic set/reset of just those bits) so it
+ *   never disturbs the data pins living on the same port.
+ *
+ *   GPIOC:
+ *     bits 0-2   = OE#, WE#, CE# (always output, active low)
+ *   Control lines get a whole port to themselves since GPIOA had no
+ *   more contiguous room left once USB/SWD claimed bits 11-14 -- BSRR
+ *   is still used here (not load-bearing alone on this port, but kept
+ *   for consistency with the rest of the driver).
  *
  * CE# is asserted once in SST_Init() and left low for the whole
  * session -- this is the only device on the bus, so there's no need to
  * toggle chip select per access. OE#/WE# do the real per-cycle work.
  * ------------------------------------------------------------------- */
 
-#define OE_PIN   GPIO_PIN_11
-#define WE_PIN   GPIO_PIN_12
-#define CE_PIN   GPIO_PIN_13
+#define OE_PIN   GPIO_PIN_0
+#define WE_PIN   GPIO_PIN_1
+#define CE_PIN   GPIO_PIN_2
 
-#define OE_LOW()   (GPIOE->BSRR = ((uint32_t)OE_PIN) << 16)
-#define OE_HIGH()  (GPIOE->BSRR = (uint32_t)OE_PIN)
-#define WE_LOW()   (GPIOE->BSRR = ((uint32_t)WE_PIN) << 16)
-#define WE_HIGH()  (GPIOE->BSRR = (uint32_t)WE_PIN)
-#define CE_LOW()   (GPIOE->BSRR = ((uint32_t)CE_PIN) << 16)
-#define CE_HIGH()  (GPIOE->BSRR = (uint32_t)CE_PIN)
+#define OE_LOW()   (GPIOC->BSRR = ((uint32_t)OE_PIN) << 16)
+#define OE_HIGH()  (GPIOC->BSRR = (uint32_t)OE_PIN)
+#define WE_LOW()   (GPIOC->BSRR = ((uint32_t)WE_PIN) << 16)
+#define WE_HIGH()  (GPIOC->BSRR = (uint32_t)WE_PIN)
+#define CE_LOW()   (GPIOC->BSRR = ((uint32_t)CE_PIN) << 16)
+#define CE_HIGH()  (GPIOC->BSRR = (uint32_t)CE_PIN)
 
-/* Bus timing margin. 30 cycles is ~180ns at 168MHz HCLK -- deliberately
+/* Bus timing margin. 30 cycles is ~360ns at the F401's max 84MHz HCLK
+ * (roughly 2x more conservative in real time than the ~180ns this same
+ * cycle count gave on the F407's 168MHz HCLK) -- deliberately
  * conservative against typical 70-150ns flash access/pulse-width specs,
  * but NOT bench-verified for your exact chip's speed grade. Tighten
  * only after checking your datasheet and ideally a scope capture. */
@@ -48,41 +67,43 @@ static inline void bus_delay(void)
     while ((DWT->CYCCNT - start) < BUS_DELAY_CYCLES) { }
 }
 
-/* A0-A15 on GPIOD (whole port, one write) + A16-A18 on GPIOE bits 8-10
- * (BSRR, so D0-D7/control on the same port are untouched). */
+/* A0-A15 on GPIOB (whole port, one write) + A16-A18 on GPIOA bits 8-10
+ * (BSRR, so D0-D7 on the same port are untouched). */
 static inline void set_address(uint32_t addr)
 {
-    GPIOD->ODR = (uint16_t)(addr & 0xFFFFu);
+    GPIOB->ODR = (uint16_t)(addr & 0xFFFFu);
 
     uint32_t hi   = (addr >> 16) & 0x7u;      /* A16,A17,A18 */
-    uint32_t bits = hi << 8;                  /* target: PE8,PE9,PE10 */
+    uint32_t bits = hi << 8;                  /* target: PA8,PA9,PA10 */
     uint32_t mask = 0x7u << 8;
-    GPIOE->BSRR = (bits & mask) | ((~bits & mask) << 16);
+    GPIOA->BSRR = (bits & mask) | ((~bits & mask) << 16);
 }
 
-/* GPIOE pins 0-7 mode bits live in the low 16 bits of MODER (2 bits/pin).
- * Clearing them = input (00); setting the 01-per-pin pattern = output. */
+/* GPIOA pins 0-7 mode bits live in the low 16 bits of MODER (2 bits/pin).
+ * Clearing them = input (00); setting the 01-per-pin pattern = output.
+ * A16-A18 on bits 8-10 and USB/SWD on bits 11-14 live in the upper bits
+ * of this same register and are untouched by this mask. */
 static inline void data_pins_input(void)
 {
-    GPIOE->MODER &= ~0x0000FFFFu;
+    GPIOA->MODER &= ~0x0000FFFFu;
 }
 
 static inline void data_pins_output(void)
 {
-    uint32_t moder = GPIOE->MODER & ~0x0000FFFFu;
-    GPIOE->MODER = moder | 0x00005555u;
+    uint32_t moder = GPIOA->MODER & ~0x0000FFFFu;
+    GPIOA->MODER = moder | 0x00005555u;
 }
 
 static inline void write_data(uint8_t data)
 {
     /* bits 0-7 only -- upper 16 bits of both masks are 0, so this never
-     * touches A16-A18/OE#/WE#/CE# on bits 8-13 */
-    GPIOE->BSRR = (uint32_t)data | ((uint32_t)(uint8_t)(~data) << 16);
+     * touches A16-A18 on bits 8-10 or USB/SWD on bits 11-14 */
+    GPIOA->BSRR = (uint32_t)data | ((uint32_t)(uint8_t)(~data) << 16);
 }
 
 static inline uint8_t read_data(void)
 {
-    return (uint8_t)(GPIOE->IDR & 0xFFu);
+    return (uint8_t)(GPIOA->IDR & 0xFFu);
 }
 
 static uint8_t bb_read_byte(uint32_t addr)
@@ -213,12 +234,13 @@ void SST_Init(void)
 
     GPIO_InitTypeDef gpio = {0};
 
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-    __HAL_RCC_GPIOE_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* GPIOD: A0-A15, all 16 pins, plain push-pull output -- this port is
-     * 100% dedicated to the address bus so a single GPIOD->ODR write can
-     * blast the whole word in one GPIOD->ODR write (see set_address()).
+    /* GPIOB: A0-A15, all 16 pins, plain push-pull output -- this port is
+     * 100% dedicated to the address bus so a single GPIOB->ODR write can
+     * blast the whole word in one GPIOB->ODR write (see set_address()).
      *
      * Speed is HIGH, not VERY_HIGH: this bus is meant for hand-wired
      * point-to-point connections (breadboard/dupont wire), not a
@@ -231,10 +253,19 @@ void SST_Init(void)
     gpio.Pull  = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_HIGH;
     gpio.Pin   = GPIO_PIN_All;
-    HAL_GPIO_Init(GPIOD, &gpio);
-    GPIOD->ODR = 0x0000u;
+    HAL_GPIO_Init(GPIOB, &gpio);
+    GPIOB->ODR = 0x0000u;
 
-    /* GPIOE bits 8-13: A16,A17,A18 + OE#,WE#,CE#, all always-output.
+    /* GPIOA bits 8-10: A16,A17,A18, always-output. No power-on glitch
+     * hazard here (unlike OE#/WE#/CE# below): these aren't active-low
+     * control lines, so whatever address value they happen to come up
+     * driving is harmless until CE# is actually asserted. Bits 11-14
+     * (USB/SWD) are left alone -- not touched by this or any other call
+     * in this driver. */
+    gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    /* GPIOC bits 0-2: OE#, WE#, CE#, all always-output, active low.
      *
      * IMPORTANT: pre-load OE#/WE#/CE# HIGH via BSRR *before* switching
      * these pins to output mode. GPIOx_ODR resets to 0 on every MCU
@@ -247,24 +278,23 @@ void SST_Init(void)
      * be on the not-yet-configured data pins. That's a spurious write
      * to the flash on every single boot. Preloading ODR first means the
      * pins come up already high with no transient low state at all. */
-    GPIOE->BSRR = (uint32_t)(OE_PIN | WE_PIN | CE_PIN);
+    GPIOC->BSRR = (uint32_t)(OE_PIN | WE_PIN | CE_PIN);
 
-    gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 |
-               GPIO_PIN_11 | GPIO_PIN_12 | GPIO_PIN_13;
-    HAL_GPIO_Init(GPIOE, &gpio);
+    gpio.Pin = OE_PIN | WE_PIN | CE_PIN;
+    HAL_GPIO_Init(GPIOC, &gpio);
     /* Already high from the BSRR preload above -- these are just
      * belt-and-suspenders confirmation, not load-bearing. */
     OE_HIGH();
     WE_HIGH();
     CE_HIGH();   /* stays high until asserted once at the end of this fn */
 
-    /* GPIOE bits 0-7: D0-D7, default to input (safe: avoids driving
+    /* GPIOA bits 0-7: D0-D7, default to input (safe: avoids driving
      * against the flash chip at power-up). Switched to output on demand
      * by data_pins_output() during writes. */
     gpio.Mode = GPIO_MODE_INPUT;
     gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
                 GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
-    HAL_GPIO_Init(GPIOE, &gpio);
+    HAL_GPIO_Init(GPIOA, &gpio);
 
     /* Only device on this bus -- enable chip select once and leave it. */
     CE_LOW();
