@@ -283,3 +283,15 @@ needed as long as the new chip uses the same command set and 512KB size.
    erase/program/read cycles -- watch for read/write errors as you go.
 3. **A GUI wrapper** (e.g. a small Tk or web front-end) around
    `program.py`'s `FlashLink` class for less command-line-averse users.
+
+## License
+
+The original code in this repository (`sst39sf040.h/.c`,
+`flash_usb_protocol.h/.c`, `main.c`, `host/`, and build/config files) is
+MIT-licensed -- see [LICENSE](LICENSE).
+
+The rest of `Src/`, `Inc/`, `Drivers/`, and `Middlewares/` is
+STMicroelectronics/ARM code generated or vendored via STM32CubeMX (HAL
+drivers, CMSIS, USB device stack) and stays under its own upstream
+license (Apache-2.0, BSD-3-Clause, or ST's SLA0044) as reproduced in the
+`LICENSE.txt` under each `Drivers/`/`Middlewares/` subdirectory.
