@@ -190,10 +190,13 @@ two sharp edges worth knowing if you repeat it (or re-generate again):
    `startup_stm32f401xe.s` correctly on regeneration -- no manual fix
    needed there, unlike the two files above.
 4. The old `EPROM_Programmer_with_STM32F407VG.ioc`,
-   `STM32F407xx_FLASH.ld`, and `startup_stm32f407xx.s` are now unused on
-   this branch (nothing references them) but were left in place rather
-   than deleted -- remove them if you're confident this branch will
-   never need to build for F407 again.
+   `STM32F407xx_FLASH.ld`, and `startup_stm32f407xx.s` have been removed
+   from this branch -- nothing referenced them once the two `.cmake`
+   files above pointed at the F401 versions. They're still recoverable
+   from `main` or git history if this branch (or a future one) ever
+   needs to build for F407 again; `STM32F407.svd` (the SFR-view register
+   map, unrelated to the build itself) was intentionally left behind --
+   see "Build" in `CLAUDE.md` for why.
 
 This branch's build has been verified to actually compile and link
 against the correct F401CE memory map (`cmake --build`, checked into
