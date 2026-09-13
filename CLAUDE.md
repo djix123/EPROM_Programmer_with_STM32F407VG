@@ -41,12 +41,10 @@ program/verify round-trip) via the host tool.
 Flashing/debugging is via OpenOCD + ST-Link, configured for CLion's
 embedded debugger. `openocd.cfg` (stlink/stm32f4x config, generic to the
 whole F4 family so it needed no change for this branch) and
-`STM32F407.svd` (peripheral register map for the SFR view — still the
-F407's; harmless for flashing/running, but expect wrong register names
-in CLion's SFR view until an STM32F401 SVD is dropped in to replace it)
-are the only in-repo pieces of that setup — see README.md "Flashing /
-debugging (OpenOCD + ST-Link)" for the CLion config and a CLI flashing
-example.
+`STM32F401.svd` (peripheral register map for the SFR view, replacing
+the F407 SVD this project shipped with originally) are the only in-repo
+pieces of that setup — see README.md "Flashing / debugging (OpenOCD +
+ST-Link)" for the CLion config and a CLI flashing example.
 
 Host tool (after flashing):
 

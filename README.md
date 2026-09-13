@@ -194,9 +194,9 @@ two sharp edges worth knowing if you repeat it (or re-generate again):
    from this branch -- nothing referenced them once the two `.cmake`
    files above pointed at the F401 versions. They're still recoverable
    from `main` or git history if this branch (or a future one) ever
-   needs to build for F407 again; `STM32F407.svd` (the SFR-view register
-   map, unrelated to the build itself) was intentionally left behind --
-   see "Build" in `CLAUDE.md` for why.
+   needs to build for F407 again. `STM32F407.svd` (the SFR-view register
+   map, unrelated to the build itself) has likewise been replaced with
+   `STM32F401.svd` -- see "Flashing / debugging" below.
 
 This branch's build has been verified to actually compile and link
 against the correct F401CE memory map (`cmake --build`, checked into
@@ -298,7 +298,7 @@ git push origin v1.0.0
 
 ## Flashing / debugging (OpenOCD + ST-Link)
 
-The repo includes `openocd.cfg` and `STM32F407.svd` for flashing and
+The repo includes `openocd.cfg` and `STM32F401.svd` for flashing and
 debugging over an ST-Link probe with OpenOCD -- this is what's set up
 and tested in CLion (Settings → Build, Execution, Deployment → Embedded
 Development → OpenOCD, and an OpenOCD run/debug configuration pointing
@@ -308,9 +308,11 @@ at the built `.elf`).
   from OpenOCD's stock config set -- no vendor-specific ST-Link variant
   or transport override should be needed for a standard ST-Link/V2 or
   onboard ST-Link. Uncomment the alternate `interface/*` line if your
-  probe needs it.
-- `STM32F407.svd` is the peripheral register map, used by CLion's (or
-  GDB's) peripheral/SFR register view during a debug session.
+  probe needs it. Generic to the whole F4 family, so it needed no change
+  on this branch.
+- `STM32F401.svd` is the peripheral register map, used by CLion's (or
+  GDB's) peripheral/SFR register view during a debug session --
+  replaces the F407 SVD this project shipped with originally.
 
 From the command line, OpenOCD can also be driven directly, e.g.:
 
