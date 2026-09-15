@@ -16,7 +16,8 @@ just plug in whichever one you have.
 Tested working on real hardware: an STM32F407VGT6 board bit-banging a
 socketed AM29F040B, exercised end-to-end from `host/program.py` --
 chip ID readback, chip/sector erase, program, and read-verify all
-confirmed against the physical chip.
+confirmed against the physical chip. Also confirmed working against a
+socketed SST39SF040.
 
 ## Architecture
 
