@@ -60,12 +60,15 @@ Port A and Port B are fully broken out (16 pins each). That rules out
 the F407 driver's original "one full port for the low address word,
 another full port for data + high address + control" layout outright --
 there's no second full 16-pin port left once Port A gives up 4 pins to
-USB (PA11/PA12) and SWD (PA13/PA14). This branch's layout instead uses
-all of Port B for the low address word (mirroring the F407's dedicated
-address port) and splits data + high address across the free bits of
-Port A, with the three control lines moved to their own footprint on
-Port C -- see the comment block at the top of `sst39sf040.c` for the
-exact bit layout and why.
+USB (PA11/PA12) and SWD (PA13/PA14). **Port B itself isn't a full 16
+pins either: PB11 is not bonded out on this package**, so it's 15 usable
+pins, not 16. This branch's layout uses the 15 available pins of Port B
+for most of the low address word (mirroring the F407's dedicated address
+port), relocates the one address line that would have landed on PB11
+onto the last free pin of Port A, and splits data + high address across
+the rest of Port A, with the three control lines moved to their own
+footprint on Port C -- see the comment block at the top of
+`sst39sf040.c` for the exact bit layout and why.
 
 **Don't assume this generalizes to every 48-pin STM32F4.** The pin
 counts above (Port C = PC0-3 + PC13-15, no Port D/E) are specific to the
@@ -94,22 +97,26 @@ see the comment block at the top of `sst39sf040.c` for exactly how.
 
 | Flash pin | STM32 pin | Flash pin | STM32 pin |
 |---|---|---|---|
-| A0  | PB0  | A11 | PB11 |
-| A1  | PB1  | A12 | PB12 |
-| A2  | PB2  | A13 | PB13 |
-| A3  | PB3  | A14 | PB14 |
-| A4  | PB4  | A15 | PB15 |
-| A5  | PB5  | A16 | PA8 |
-| A6  | PB6  | A17 | PA9 |
-| A7  | PB7  | A18 | PA10 |
-| A8  | PB8  | D0  | PA0 |
-| A9  | PB9  | D1  | PA1 |
-| A10 | PB10 | D2  | PA2 |
-| | | D3  | PA3 |
-| | | D4  | PA4 |
+| A0  | PB0  | A12 | PB12 |
+| A1  | PB1  | A13 | PB13 |
+| A2  | PB2  | A14 | PB14 |
+| A3  | PB3  | A15 | PB15 |
+| A4  | PB4  | A16 | PA8 |
+| A5  | PB5  | A17 | PA9 |
+| A6  | PB6  | A18 | PA10 |
+| A7  | PB7  | D0  | PA0 |
+| A8  | PB8  | D1  | PA1 |
+| A9  | PB9  | D2  | PA2 |
+| A10 | PB10 | D3  | PA3 |
+| A11 | PA15 | D4  | PA4 |
 | | | D5  | PA5 |
 | | | D6  | PA6 |
 | | | D7  | PA7 |
+
+**A11 is on PA15, not PB11** -- PB11 does not exist on this 48-pin
+package (Port B is 15 pins here, with a gap at 11), so A11 was moved to
+the one spare pin on Port A instead of repacking A12-A15 down a bit. See
+the comment block at the top of `sst39sf040.c` for why PA15 specifically.
 
 | Signal | STM32 pin |
 |---|---|
@@ -128,7 +135,11 @@ which is this project's default). PC13 often carries an onboard LED or
 button on Black Pill-style boards -- using it here (it isn't, in the
 table above) would fight that. PA11-PA14 (USB D-/D+, SWDIO/SWCLK) and
 PH0/PH1 (HSE crystal, if your board has one) are reserved and must not
-be reused for the bus -- this driver never touches them.
+be reused for the bus -- this driver never touches them. PA15 (A11
+above), along with PB3 and PB4 which are already in the table as A3/A4,
+default to the full-JTAG signals JTDI/JTDO(SWO)/NJTRST at reset -- this
+driver reconfigures them as plain GPIO, which is safe here since debug
+is SWD-only (2-wire, PA13/PA14) and never touches full JTAG.
 
 USB: PA11 (USB_DM) / PA12 (USB_DP), device-only OTG FS -- CubeMX wires
 these automatically when you enable the peripheral below.
@@ -141,7 +152,12 @@ project, they have not additionally been cross-checked against a
 physical board's silkscreen/schematic for this specific target -- if
 your exact board (e.g. a Black Pill clone) documents a different pin
 assignment for something you're relying on here (LED, button, crystal),
-trust your board's own schematic over this table. The `BUS_DELAY_CYCLES`
+trust your board's own schematic over this table. **PB11 is the concrete
+case where an earlier version of this doc got a datasheet-derived
+assumption wrong** -- it was originally listed as A11 on the assumption
+that Port B was a full 16 pins on this package, when it's actually 15;
+double-check any "whole port" assumption like that against the actual
+pin table rather than the pin count alone. The `BUS_DELAY_CYCLES`
 margin in `sst39sf040.c` (~360ns at the F401's max 84MHz between each
 bus phase) is a deliberately conservative estimate against typical
 70-150ns flash timings, not something bench-verified against your exact

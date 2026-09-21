@@ -14,11 +14,17 @@
  * see the FT rationale in README.md -- so, unlike the F407 port, there
  * was no need to dodge non-FT pins when choosing this layout.
  *
- * Pin map, chosen so the address bus is one single-instruction port
- * write and the data byte is another:
+ * Pin map, chosen so the address bus is two single-instruction port
+ * writes and the data byte is another:
  *
- *   GPIOB (all 16 pins, dedicated) = A0-A15, always output.
- *       One write to GPIOB->ODR sets the entire low address word.
+ *   GPIOB = A0-A10 on bits 0-10, A12-A15 on bits 12-15, always output.
+ *       PB11 does NOT exist on this package's 48-pin package -- Port B
+ *       is only 15 pins here (unlike the F407's full 16), so A11 can't
+ *       live at its "natural" bit 11 position. It's relocated to PA15
+ *       (see below) instead of repacking A12-A15 down by one bit, so
+ *       every other address line keeps its 1:1 An-to-PBn wiring. One
+ *       write to GPIOB->ODR still sets the whole word (bit 11 is simply
+ *       masked out -- there's no pad behind it to drive).
  *
  *   GPIOA:
  *     bits 0-7   = D0-D7  (bidirectional: input while reading, output
@@ -26,9 +32,16 @@
  *     bits 8-10  = A16,A17,A18 (always output)
  *     bits 11-12 = USB_OTG_FS (D-/D+) -- CubeMX-owned, untouched here
  *     bits 13-14 = SWDIO/SWCLK -- untouched here, keeps hardware debug
- *     bit  15    = unused
- *   A16-A18 is set via BSRR (atomic set/reset of just those bits) so it
- *   never disturbs the data pins living on the same port.
+ *     bit  15    = A11 (always output) -- the only free pin left on a
+ *                  port that already has an address BSRR write, so
+ *                  putting A11 here keeps the address bus at 2 writes
+ *                  total instead of needing a 3rd port. PA15 defaults
+ *                  to JTDI (full-JTAG) at reset, same as PB3/PB4 below
+ *                  it in GPIOA's init -- harmless since this project
+ *                  debugs over SWD only (PA13/PA14), not full JTAG.
+ *   A11 and A16-A18 are set together via one BSRR write (atomic
+ *   set/reset of just those bits) so it never disturbs the data pins
+ *   living on the same port.
  *
  *   GPIOC:
  *     bits 0-2   = OE#, WE#, CE# (always output, active low)
@@ -67,15 +80,17 @@ static inline void bus_delay(void)
     while ((DWT->CYCCNT - start) < BUS_DELAY_CYCLES) { }
 }
 
-/* A0-A15 on GPIOB (whole port, one write) + A16-A18 on GPIOA bits 8-10
- * (BSRR, so D0-D7 on the same port are untouched). */
+/* A0-A10,A12-A15 on GPIOB (whole port minus the nonexistent PB11, one
+ * write) + A11,A16-A18 on GPIOA bits 15,8-10 (BSRR, so D0-D7 on the
+ * same port are untouched). */
 static inline void set_address(uint32_t addr)
 {
-    GPIOB->ODR = (uint16_t)(addr & 0xFFFFu);
+    GPIOB->ODR = (uint16_t)(addr & 0xF7FFu);  /* bit 11 excluded: no pin there */
 
-    uint32_t hi   = (addr >> 16) & 0x7u;      /* A16,A17,A18 */
-    uint32_t bits = hi << 8;                  /* target: PA8,PA9,PA10 */
-    uint32_t mask = 0x7u << 8;
+    uint32_t a11    = (addr >> 11) & 0x1u;    /* A11 -> PA15 */
+    uint32_t a16_18 = (addr >> 16) & 0x7u;    /* A16,A17,A18 -> PA8,PA9,PA10 */
+    uint32_t bits = (a11 << 15) | (a16_18 << 8);
+    uint32_t mask = (0x1u << 15) | (0x7u << 8);
     GPIOA->BSRR = (bits & mask) | ((~bits & mask) << 16);
 }
 
@@ -238,9 +253,12 @@ void SST_Init(void)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    /* GPIOB: A0-A15, all 16 pins, plain push-pull output -- this port is
-     * 100% dedicated to the address bus so a single GPIOB->ODR write can
-     * blast the whole word in one GPIOB->ODR write (see set_address()).
+    /* GPIOB: A0-A10,A12-A15, plain push-pull output -- this port is
+     * dedicated to the address bus so a single GPIOB->ODR write can
+     * blast the whole word in one go (see set_address()). PB11 doesn't
+     * exist on this package, so it's excluded from the pin mask here
+     * (harmless either way -- HAL_GPIO_Init() on a nonexistent pin bit
+     * is a no-op -- but explicit beats relying on that).
      *
      * Speed is HIGH, not VERY_HIGH: this bus is meant for hand-wired
      * point-to-point connections (breadboard/dupont wire), not a
@@ -252,17 +270,19 @@ void SST_Init(void)
     gpio.Mode  = GPIO_MODE_OUTPUT_PP;
     gpio.Pull  = GPIO_NOPULL;
     gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    gpio.Pin   = GPIO_PIN_All;
+    gpio.Pin   = GPIO_PIN_All & ~GPIO_PIN_11;
     HAL_GPIO_Init(GPIOB, &gpio);
     GPIOB->ODR = 0x0000u;
 
-    /* GPIOA bits 8-10: A16,A17,A18, always-output. No power-on glitch
-     * hazard here (unlike OE#/WE#/CE# below): these aren't active-low
-     * control lines, so whatever address value they happen to come up
-     * driving is harmless until CE# is actually asserted. Bits 11-14
-     * (USB/SWD) are left alone -- not touched by this or any other call
+    /* GPIOA bits 8-10,15: A16,A17,A18,A11, always-output. No power-on
+     * glitch hazard here (unlike OE#/WE#/CE# below): these aren't
+     * active-low control lines, so whatever address value they happen
+     * to come up driving is harmless until CE# is actually asserted.
+     * Bit 15 (A11) overrides PA15's reset-default JTDI function, which
+     * is fine since debug here is SWD-only (PA13/PA14) -- bits 11-14
+     * (USB/SWD) are left alone, not touched by this or any other call
      * in this driver. */
-    gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10;
+    gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_15;
     HAL_GPIO_Init(GPIOA, &gpio);
 
     /* GPIOC bits 0-2: OE#, WE#, CE#, all always-output, active low.

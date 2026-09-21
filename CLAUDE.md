@@ -14,15 +14,19 @@ verify it, or just query chip ID/size/sector info.
 LQFP48/UFQFPN48 -- the chip on "Black Pill"-style hobby boards), ported
 from the original STM32F407VE/VG target (100-pin LQFP100) that `main`
 still targets. The port has not been bench-verified against physical
-F401CE hardware yet -- see the top of README.md. Two consequences of
-the much smaller package shape the code differently here than on
-`main`: **Port D and Port E don't exist on this package at all**, and
-Port C is only partially present (PC0-3, PC13-15), so the bus is wired
-across Ports A/B/C instead of D/E (see the pin map in
-`sst39sf040.c`/README.md "Wiring"). And **every GPIO on this package is
-5V-tolerant**, so — unlike the F407 side, where FT status had to be
-checked pin-by-pin — there was no non-FT subset to dodge when choosing
-the new pin map.
+F401CE hardware yet -- see the top of README.md. Consequences of the
+much smaller package shape the code differently here than on `main`:
+**Port D and Port E don't exist on this package at all**, Port C is
+only partially present (PC0-3, PC13-15), and **Port B itself is missing
+PB11** (15 usable pins, not 16) — so the bus is wired across Ports
+A/B/C instead of D/E, with the address line that would have landed on
+PB11 relocated to PA15 instead (see the pin map in
+`sst39sf040.c`/README.md "Wiring"). Don't assume a port is fully
+present here just because it's present at all — check the actual pin
+list, not just the pin count, before wiring a new signal onto it. And
+**every GPIO on this package is 5V-tolerant**, so — unlike the F407
+side, where FT status had to be checked pin-by-pin — there was no
+non-FT subset to dodge when choosing the pin map.
 
 ## Build
 
