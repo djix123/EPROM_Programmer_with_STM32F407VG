@@ -125,6 +125,16 @@ for the one deliberate patch documented below.
   (no full second port free once USB/SWD claim four bits of Port A).
   Don't "simplify" by reintroducing FSMC or assuming a full Port
   C/D/E without re-checking this package's actual pinout.
+- **Port B is also not a full 16 pins on this package — PB11 doesn't
+  exist.** An earlier version of this branch assumed it did and wired
+  address line A11 to PB11, which silently left A11 undriven (no pad
+  behind that register bit). Since the JEDEC unlock sequence depends on
+  A11 toggling (0x2AAA has bit 11 set, 0x5555 doesn't), this broke chip
+  ID readback, erase, and program outright — not just high-address
+  access. Fixed by moving A11 to PA15 (`sst39sf040.c`'s `set_address()`
+  and `SST_Init()`); see README "Wiring" for the corrected table. If you
+  ever touch the pin map again: check the actual per-pin list in the
+  datasheet, not just the port's usual pin count.
 - **The flash chip is 5V-only**, powered from a separate rail from the
   STM32's 3.3V. Unlike the F407 branch, every GPIO on this package is
   5V-tolerant ("FT"), so there's no FT-subset constraint on where the
