@@ -17,7 +17,8 @@ still targets. The port has not been bench-verified against physical
 F401CE hardware yet -- see the top of README.md. Consequences of the
 much smaller package shape the code differently here than on `main`:
 **Port D and Port E don't exist on this package at all**, Port C is
-only partially present (PC0-3, PC13-15), and **Port B itself is missing
+only partially present (**PC13-15 only** -- PC0-3 do NOT exist on this
+package, confirmed against ST datasheet DS9716 Table 8), and **Port B itself is missing
 PB11** (15 usable pins, not 16) — so the bus is wired across Ports
 A/B/C instead of D/E, with the address line that would have landed on
 PB11 relocated to PA15 instead (see the pin map in
@@ -119,7 +120,8 @@ for the one deliberate patch documented below.
 ## Hardware constraints that shape the code
 
 - **STM32F401CE's 48-pin package (LQFP48/UFQFPN48) has no Port D or
-  Port E at all, and only PC0-3/PC13-15 of Port C** — this is *why* the
+  Port E at all, and only PC13-15 of Port C (PC0-3 don't exist on this
+  package)** — this is *why* the
   bus is split across Ports A/B/C instead of the F407 branch's D/E, and
   *why* it can't just reuse FSMC's non-muxed address-bus mode either
   (no full second port free once USB/SWD claim four bits of Port A).
@@ -140,6 +142,27 @@ for the one deliberate patch documented below.
   5V-tolerant ("FT"), so there's no FT-subset constraint on where the
   bus pins go — just don't reuse PA11/PA12 (USB), PA13/PA14 (SWD), or
   PH0/PH1 (HSE crystal, if populated), which this driver already avoids.
+  (PC14/PC15 lose FT only in oscillator mode, which the backup-domain
+  reset below rules out.)
+- **CE#/OE#/WE# are on PC13/PC14/PC15, the only Port C pins that exist
+  on this package, and those pins carry backup-domain baggage.** They're
+  fed through the backup-domain power switch (2MHz / 30pF / 3mA-sink
+  cap, never a current source — hence their own `GPIO_SPEED_FREQ_LOW`
+  init in `SST_Init()`). PC14/PC15 are also OSC32_IN/OSC32_OUT (LSE),
+  and PC13 can be taken over by RTC tamper/timestamp/alarm output. LSE
+  and RTC settings survive a normal reset, so `SST_Init()` does a full
+  backup-domain reset (`__HAL_RCC_BACKUPRESET_FORCE/RELEASE`) before
+  driving these pins — the LSE must stay disabled in code. Don't add
+  RTC/LSE/backup-register use without first moving these control lines,
+  and don't mark PC13-15 as outputs in the `.ioc`: CubeMX's generated
+  `MX_GPIO_Init()` runs after `SST_Init()` and would drive them low,
+  asserting CE#/OE#/WE# at boot. Pin facts come from DS9716 Table 8
+  (copy in `datasheet/`; F401xB/C) — the F401CE's own DS10086 has the
+  same 48-pin pinout.
+- **Read→write bus turnaround:** `bb_write_byte()` waits one
+  `bus_delay()` before driving D0-D7, because after a read the flash is
+  still driving the bus until the slow (low-speed PC14) OE# rise plus
+  its output-disable time finish. Keep that delay if tuning timing.
 - **`BUS_DELAY_CYCLES`** in `sst39sf040.c` is a deliberately
   conservative bus-timing margin (not bench-verified against a specific
   chip's speed grade), sized against this MCU's 84MHz max clock (vs the

@@ -6,10 +6,13 @@
  *
  * STM32F401CE target note: this MCU's 48-pin package (LQFP48/UFQFPN48)
  * has no Port D or Port E at all, and Port C is only partially present
- * (PC0-PC3, PC13-PC15) -- unlike the LQFP100 STM32F407VE/VG this driver
- * originally targeted, where the full Ports D and E gave two whole
- * 16-pin ports to dedicate to the bus. The layout below re-derives the
- * same "one port write per bus phase" trick using Ports A/B/C instead.
+ * (PC13-PC15 only -- PC0-PC3 are NOT bonded out on this package, unlike
+ * the 64/100-pin parts; confirmed against ST datasheet DS9716 Table 8,
+ * whose UQFN48 column shows "-" for PC0-PC3) -- unlike the LQFP100
+ * STM32F407VE/VG this driver originally targeted, where the full Ports D
+ * and E gave two whole 16-pin ports to dedicate to the bus. The layout
+ * below re-derives the same "one port write per bus phase" trick using
+ * Ports A/B/C instead.
  * It happens that on this package *every* GPIO is 5V-tolerant (FT) --
  * see the FT rationale in README.md -- so, unlike the F407 port, there
  * was no need to dodge non-FT pins when choosing this layout.
@@ -44,20 +47,39 @@
  *   living on the same port.
  *
  *   GPIOC:
- *     bits 0-2   = OE#, WE#, CE# (always output, active low)
- *   Control lines get a whole port to themselves since GPIOA had no
- *   more contiguous room left once USB/SWD claimed bits 11-14 -- BSRR
- *   is still used here (not load-bearing alone on this port, but kept
- *   for consistency with the rest of the driver).
+ *     bits 13-15 = CE#, OE#, WE# (always output, active low) -- the only
+ *   three Port C pins that exist on this package. They're routed through
+ *   the backup-domain power switch (ST datasheet DS9716 Table 8, note 2):
+ *   output mode is capped at 2MHz toggle speed / 30pF load, and they must
+ *   never be used as a current source (e.g. to drive an LED), so this
+ *   block gets its own GPIO_SPEED_FREQ_LOW init in SST_Init() instead of
+ *   reusing the HIGH-speed struct used for the rest of the bus. CE# (the
+ *   only one of the three that never toggles after init) is deliberately
+ *   the one placed on PC13, since PC13 commonly carries an onboard
+ *   LED/button on Black-Pill-style boards (see README "Wiring") -- OE#
+ *   and WE# toggle every access, so keeping them off PC13 avoids fighting
+ *   that LED/button on every read/write.
+ *     PC14/PC15 default to OSC32_IN/OSC32_OUT (the LSE 32.768kHz RTC
+ *   oscillator pins) -- if RCC_BDCR's LSEON bit is ever set, the LSE
+ *   hardware takes over these pins electrically regardless of GPIO mode.
+ *   Likewise, RTC tamper/timestamp/alarm-output settings override PC13.
+ *   Nothing in this project enables LSE or the RTC, but both live in the
+ *   backup domain and survive a normal NRST/system reset, so SST_Init()
+ *   does a full backup-domain reset before switching these pins to GPIO
+ *   output.
+ *
+ *   Pin-existence facts here are from ST's DS9716 (STM32F401xB/C) Table
+ *   8; the F401CE's own datasheet is DS10086 (F401xD/E), whose 48-pin
+ *   pinout is identical.
  *
  * CE# is asserted once in SST_Init() and left low for the whole
  * session -- this is the only device on the bus, so there's no need to
  * toggle chip select per access. OE#/WE# do the real per-cycle work.
  * ------------------------------------------------------------------- */
 
-#define OE_PIN   GPIO_PIN_0
-#define WE_PIN   GPIO_PIN_1
-#define CE_PIN   GPIO_PIN_2
+#define CE_PIN   GPIO_PIN_13
+#define OE_PIN   GPIO_PIN_14
+#define WE_PIN   GPIO_PIN_15
 
 #define OE_LOW()   (GPIOC->BSRR = ((uint32_t)OE_PIN) << 16)
 #define OE_HIGH()  (GPIOC->BSRR = (uint32_t)OE_PIN)
@@ -71,7 +93,13 @@
  * cycle count gave on the F407's 168MHz HCLK) -- deliberately
  * conservative against typical 70-150ns flash access/pulse-width specs,
  * but NOT bench-verified for your exact chip's speed grade. Tighten
- * only after checking your datasheet and ideally a scope capture. */
+ * only after checking your datasheet and ideally a scope capture.
+ *
+ * This also sets the OE#/WE# toggle rate: reads take two bus_delay()
+ * calls per byte (~1/(2*360ns) =~ 1.4MHz), writes four (~0.7MHz) -- both
+ * under PC13-15's 2MHz output-speed cap (see the GPIOC comment above),
+ * reads with the least margin. Re-check against a scope if this is ever
+ * tightened for speed. */
 #define BUS_DELAY_CYCLES 30u
 
 static inline void bus_delay(void)
@@ -136,6 +164,12 @@ static uint8_t bb_read_byte(uint32_t addr)
 static void bb_write_byte(uint32_t addr, uint8_t data)
 {
     set_address(addr);
+    /* Bus turnaround: if the previous cycle was a read (DQ7 polling, ID
+     * readback), OE# only just went high, and the flash keeps driving
+     * D0-D7 until OE#'s rise completes (up to ~100ns on low-speed PC14)
+     * plus its own output-disable time (~20-30ns). Wait before the MCU
+     * starts driving the same pins, to avoid contention. */
+    bus_delay();
     data_pins_output();
     write_data(data);
     bus_delay();             /* address/data setup before WE pulse */
@@ -285,7 +319,36 @@ void SST_Init(void)
     gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_15;
     HAL_GPIO_Init(GPIOA, &gpio);
 
-    /* GPIOC bits 0-2: OE#, WE#, CE#, all always-output, active low.
+    /* Full backup-domain reset before touching PC13-PC15. The backup
+     * domain (RCC_BDCR + all RTC registers) survives a normal NRST/system
+     * reset, so settings left behind by earlier firmware on this board
+     * would still be live here even though this project never sets them:
+     *   - RCC_BDCR LSEON/LSEBYP: the LSE oscillator takes over PC14
+     *     (OSC32_IN) / PC15 (OSC32_OUT) regardless of GPIO mode, fighting
+     *     the OE#/WE# drive.
+     *   - RTC_TAFCR / RTC_CR (tamper, timestamp, alarm/calib output): per
+     *     DS9716/DS10086 Table 8 note 3, these override PC13 (CE#).
+     * BDRST clears both in one step. It also wipes the RTC and backup
+     * registers -- unused by this project; if RTC or backup-register
+     * support is ever added, this reset (and the PC13-15 pin choice)
+     * has to be revisited. Backup-domain registers are write-protected
+     * until PWR_CR's DBP bit is set; the PWR clock is already enabled by
+     * SystemClock_Config(), which runs before this. */
+    HAL_PWR_EnableBkUpAccess();
+    __HAL_RCC_BACKUPRESET_FORCE();
+    __HAL_RCC_BACKUPRESET_RELEASE();
+    {
+        /* LSE stops within a few LSE cycles; bounded wait (a few ms worst
+         * case at 84MHz) in case it was running. */
+        uint32_t lserdy_timeout = SystemCoreClock / 1000u;
+        while ((RCC->BDCR & RCC_BDCR_LSERDY) && lserdy_timeout--) { }
+    }
+
+    /* GPIOC bits 13-15: CE#, OE#, WE#, all always-output, active low --
+     * see the GPIOC comment at the top of this file for why these are
+     * the only three Port C pins that exist here, and why this block
+     * needs its own GPIO_SPEED_FREQ_LOW init (2MHz/30pF cap on PC13-15)
+     * rather than reusing the HIGH-speed `gpio` struct above.
      *
      * IMPORTANT: pre-load OE#/WE#/CE# HIGH via BSRR *before* switching
      * these pins to output mode. GPIOx_ODR resets to 0 on every MCU
@@ -300,8 +363,12 @@ void SST_Init(void)
      * pins come up already high with no transient low state at all. */
     GPIOC->BSRR = (uint32_t)(OE_PIN | WE_PIN | CE_PIN);
 
-    gpio.Pin = OE_PIN | WE_PIN | CE_PIN;
-    HAL_GPIO_Init(GPIOC, &gpio);
+    GPIO_InitTypeDef gpio_ctrl = {0};
+    gpio_ctrl.Mode  = GPIO_MODE_OUTPUT_PP;
+    gpio_ctrl.Pull  = GPIO_NOPULL;
+    gpio_ctrl.Speed = GPIO_SPEED_FREQ_LOW;
+    gpio_ctrl.Pin   = OE_PIN | WE_PIN | CE_PIN;
+    HAL_GPIO_Init(GPIOC, &gpio_ctrl);
     /* Already high from the BSRR preload above -- these are just
      * belt-and-suspenders confirmation, not load-bearing. */
     OE_HIGH();

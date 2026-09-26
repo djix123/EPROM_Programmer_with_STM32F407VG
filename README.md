@@ -55,8 +55,11 @@ applies to either.
 
 The 48-pin package is a much bigger constraint than the F407's LQFP100:
 **Port D and Port E don't exist on it at all**, and **Port C is only
-partially present** (PC0-PC3 and PC13-PC15 -- 7 of its 16 pins). Only
-Port A and Port B are fully broken out (16 pins each). That rules out
+partially present** -- only PC13-PC15 (3 of its 16 pins) are bonded out;
+PC0-PC3 do NOT exist on this package (confirmed against ST datasheet
+DS9716 Table 8, whose UQFN48 column shows "-" for PC0-PC3 while the
+64/100-pin packages all have them). Only Port A and Port B are fully
+broken out (16 pins each). That rules out
 the F407 driver's original "one full port for the low address word,
 another full port for data + high address + control" layout outright --
 there's no second full 16-pin port left once Port A gives up 4 pins to
@@ -71,7 +74,7 @@ footprint on Port C -- see the comment block at the top of
 `sst39sf040.c` for the exact bit layout and why.
 
 **Don't assume this generalizes to every 48-pin STM32F4.** The pin
-counts above (Port C = PC0-3 + PC13-15, no Port D/E) are specific to the
+counts above (Port C = PC13-15 only, no Port D/E) are specific to the
 STM32F401's LQFP48/UFQFPN48; other F4-family parts in a 48-pin package
 can differ.
 
@@ -81,8 +84,9 @@ The SST39SF040 is a **5V-only part**. Power it from a separate 5V rail,
 not the STM32's 3.3V. Good news for this target: **every GPIO pin on
 the STM32F401's 48-pin package is 5V-tolerant ("FT")** -- confirmed
 against ST's DS10086 pin definition table -- except PC14/PC15/PH0/PH1
-when actually configured as an oscillator input, which doesn't apply to
-any pin used below. That's a meaningfully simpler story than the F407,
+while configured in oscillator mode. PC14/PC15 are used below (OE#/WE#),
+but never in oscillator mode: `SST_Init()` resets the backup domain,
+which turns the LSE oscillator off, before driving them as GPIO. That's a meaningfully simpler story than the F407,
 where FT status varies pin-by-pin and had to be checked individually;
 here, the chip driving 5V back onto any of these pins during reads is
 safe by construction, not by careful pin selection. Decouple VCC/GND at
@@ -120,34 +124,58 @@ the comment block at the top of `sst39sf040.c` for why PA15 specifically.
 
 | Signal | STM32 pin |
 |---|---|
-| OE# | PC0 |
-| WE# | PC1 |
-| CE# | PC2 |
+| CE# | PC13 |
+| OE# | PC14 |
+| WE# | PC15 |
 
 CE# is driven low once at startup and left there for the whole session
 (this is the only device on the bus, so there's no need to toggle chip
-select per access) -- OE#/WE#/CE# do the actual per-cycle work.
+select per access) -- OE#/WE#/CE# do the actual per-cycle work. CE# is
+deliberately the one on PC13 (see caveat below) since it's the only one
+of the three that doesn't toggle on every access.
+
+PC13-PC15 are the only Port C pins that exist on this 48-pin package
+(see "Package note" above) and are fed through the backup-domain power
+switch, which caps them at 2MHz output speed / 30pF load and forbids
+using them as a current source (e.g. to drive an LED) -- `SST_Init()`
+gives them their own low-speed GPIO init rather than reusing the
+high-speed setting used for the rest of the bus. PC14/PC15 also default
+to OSC32_IN/OSC32_OUT (the LSE 32.768kHz RTC oscillator pins), and
+PC13's function can be overridden by the RTC's tamper/timestamp/alarm
+output settings. Nothing in this project enables the LSE or the RTC, but
+their settings live in the backup domain, which survives a normal reset
+-- so leftovers from earlier firmware on the board could still be active.
+`SST_Init()` therefore does a full backup-domain reset (clearing the LSE,
+the RTC, and the backup registers, none of which this project uses)
+before configuring these pins as outputs. If you ever add RTC, LSE, or
+backup-register support to this project, re-wire CE#/OE#/WE# elsewhere
+first and drop that reset.
 
 **Check your specific board before wiring.** PB2 doubles as BOOT1
 (sampled at reset only when BOOT0 is pulled high to select system/RAM
 bootloader mode; irrelevant with BOOT0 held low for normal flash boot,
 which is this project's default). PC13 often carries an onboard LED or
-button on Black Pill-style boards -- using it here (it isn't, in the
-table above) would fight that. PA11-PA14 (USB D-/D+, SWDIO/SWCLK) and
-PH0/PH1 (HSE crystal, if your board has one) are reserved and must not
-be reused for the bus -- this driver never touches them. PA15 (A11
-above), along with PB3 and PB4 which are already in the table as A3/A4,
-default to the full-JTAG signals JTDI/JTDO(SWO)/NJTRST at reset -- this
-driver reconfigures them as plain GPIO, which is safe here since debug
-is SWD-only (2-wire, PA13/PA14) and never touches full JTAG.
+button on Black Pill-style boards -- that's exactly why CE# (asserted
+once at boot and otherwise static) is the signal placed there rather
+than OE#/WE#, but it will still visibly light/affect that LED/button for
+the whole session once CE# goes low; if your board's PC13 use conflicts,
+swap it for another line in the table above. PA11-PA14 (USB D-/D+,
+SWDIO/SWCLK) and PH0/PH1 (HSE crystal, if your board has one) are
+reserved and must not be reused for the bus -- this driver never touches
+them. PA15 (A11 above), along with PB3 and PB4 which are already in the
+table as A3/A4, default to the full-JTAG signals JTDI/JTDO(SWO)/NJTRST
+at reset -- this driver reconfigures them as plain GPIO, which is safe
+here since debug is SWD-only (2-wire, PA13/PA14) and never touches full
+JTAG.
 
 USB: PA11 (USB_DM) / PA12 (USB_DP), device-only OTG FS -- CubeMX wires
 these automatically when you enable the peripheral below.
 
 **A note on confidence:** the pin-existence and FT facts above (which
 ports/pins are present, and 5V-tolerant, on the LQFP48/UFQFPN48 package)
-are drawn from ST's official STM32F401 datasheet (DS10086) pin
-definition table. Unlike the LQFP100 facts on the F407 side of this
+are drawn from ST's official STM32F401 datasheets' pin definition
+tables: DS10086 (STM32F401xD/E) and DS9716 (STM32F401xB/C, a copy of
+which is in `datasheet/`), whose 48-pin pinouts are identical. Unlike the LQFP100 facts on the F407 side of this
 project, they have not additionally been cross-checked against a
 physical board's silkscreen/schematic for this specific target -- if
 your exact board (e.g. a Black Pill clone) documents a different pin
@@ -155,8 +183,10 @@ assignment for something you're relying on here (LED, button, crystal),
 trust your board's own schematic over this table. **PB11 is the concrete
 case where an earlier version of this doc got a datasheet-derived
 assumption wrong** -- it was originally listed as A11 on the assumption
-that Port B was a full 16 pins on this package, when it's actually 15;
-double-check any "whole port" assumption like that against the actual
+that Port B was a full 16 pins on this package, when it's actually 15.
+**PC0-PC2 were a second case** -- the control lines were originally
+wired there, but PC0-PC3 aren't bonded out on the 48-pin package at all
+(only PC13-PC15 are). Double-check any "whole port" assumption like that against the actual
 pin table rather than the pin count alone. The `BUS_DELAY_CYCLES`
 margin in `sst39sf040.c` (~360ns at the F401's max 84MHz between each
 bus phase) is a deliberately conservative estimate against typical
