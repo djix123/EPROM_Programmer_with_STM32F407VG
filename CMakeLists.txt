@@ -19,7 +19,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME EPROM_Programmer_with_STM32F407VG)
+set(CMAKE_PROJECT_NAME EPROM_Programmer_with_STM32F401CE)
 
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
