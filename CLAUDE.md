@@ -13,8 +13,9 @@ verify it, or just query chip ID/size/sector info.
 **This `stm32f401ce` branch targets an STM32F401CE** (48-pin
 LQFP48/UFQFPN48 -- the chip on "Black Pill"-style hobby boards), ported
 from the original STM32F407VE/VG target (100-pin LQFP100) that `main`
-still targets. The port has not been bench-verified against physical
-F401CE hardware yet -- see the top of README.md. Consequences of the
+still targets. The port has been bench-tested on real hardware with an
+SST39SF040 (the AM29F040B has only been tested on the F407 build) -- see
+the top of README.md. Consequences of the
 much smaller package shape the code differently here than on `main`:
 **Port D and Port E don't exist on this package at all**, Port C is
 only partially present (**PC13-15 only** -- PC0-3 do NOT exist on this

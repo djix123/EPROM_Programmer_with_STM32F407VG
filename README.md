@@ -21,18 +21,16 @@ smaller **STM32F401CC (256KB flash / 64KB RAM)** rather than the CE's
 512KB/96KB -- the CC's memory map is a strict subset of the CE's, so a
 build against these more conservative sizes runs unmodified on either
 part, and this branch now targets both the STM32F401CC and STM32F401CE.
-**This port has not yet been bench-verified against physical
-hardware** -- the pin map and GPIO setup were re-derived carefully from
-the STM32F401 datasheet (see the FT/package notes below), but only the
-original F407 build has the "confirmed against real hardware" track
-record described next. Treat this branch as needing the same
-chip-ID-readback / erase / program / verify bring-up pass the F407
-build already went through before relying on it.
+**This port has been tested working on real hardware** with an
+SST39SF040 on an STM32F401 board, exercised end-to-end from
+`host/program.py` -- chip ID readback, erase, program, and read-verify
+all confirmed against the physical chip. (The AM29F040B has so far only
+been bench-tested on the F407 build, not on this port.)
 
-The F407 build was tested working on real hardware: an STM32F407VGT6
-board bit-banging a socketed AM29F040B, exercised end-to-end from
-`host/program.py` -- chip ID readback, chip/sector erase, program, and
-read-verify all confirmed against the physical chip.
+The original F407 build was likewise tested working on real hardware: an
+STM32F407VGT6 board bit-banging a socketed AM29F040B, with chip ID
+readback, chip/sector erase, program, and read-verify all confirmed
+against the physical chip.
 
 ## Architecture
 
@@ -258,10 +256,8 @@ This branch's build has been verified to actually compile and link
 against the STM32F401CC memory map (`cmake --build`, checked into
 CI-equivalent conditions locally) -- which, being a strict subset of
 the CE's, also fits the CE, so this same build targets both parts. It
-has **not** been bench-verified against physical hardware yet -- see
-the top of this README -- run the same chip-ID / erase / program /
-verify pass the F407 build already passed before trusting it with real
-data.
+has been bench-tested against a real SST39SF040 (see the top of this
+README).
 
 ## USB CDC setup (do this in CubeMX)
 
