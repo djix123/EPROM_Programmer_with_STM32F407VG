@@ -49,7 +49,9 @@ whole F4 family so it needed no change for this branch) and
 `STM32F401.svd` (peripheral register map for the SFR view, replacing
 the F407 SVD this project shipped with originally) are the only in-repo
 pieces of that setup — see README.md "Flashing / debugging (OpenOCD +
-ST-Link)" for the CLion config and a CLI flashing example.
+ST-Link)" for the CLion config and a CLI flashing example. On this
+branch the firmware takes over the SWD pins, so reflashing needs the
+BOOT0 procedure documented there and app-level debugging isn't possible.
 
 Host tool (after flashing):
 
@@ -72,9 +74,8 @@ for the one deliberate patch documented below.
   on this branch (see the pin table in README.md and the comment block
   at the top of the `.c` file for the exact mapping — it's chosen so
   the whole low address word is one GPIOB register write and the data
-  byte is one GPIOA register write, with the three control lines on
-  GPIOC since there was no room left on GPIOA once USB/SWD claimed
-  four of its bits). Issues the SST/AMD JEDEC command sequences
+  byte is one GPIOA register write, with WE#/OE# on the repurposed SWD
+  pins PA13/PA14; CE# is hardwired to GND, not an MCU pin). Issues the SST/AMD JEDEC command sequences
   (unlock, program, erase) and does DQ7 data-polling to detect
   completion. Chip identity (SST39SF040 vs AM29F040B — different sector
   sizes and erase timeouts) is auto-detected at runtime via
@@ -124,7 +125,7 @@ for the one deliberate patch documented below.
   package)** — this is *why* the
   bus is split across Ports A/B/C instead of the F407 branch's D/E, and
   *why* it can't just reuse FSMC's non-muxed address-bus mode either
-  (no full second port free once USB/SWD claim four bits of Port A).
+  (no full second port free once USB claims two bits of Port A).
   Don't "simplify" by reintroducing FSMC or assuming a full Port
   C/D/E without re-checking this package's actual pinout.
 - **Port B is also not a full 16 pins on this package — PB11 doesn't
@@ -140,29 +141,41 @@ for the one deliberate patch documented below.
 - **The flash chip is 5V-only**, powered from a separate rail from the
   STM32's 3.3V. Unlike the F407 branch, every GPIO on this package is
   5V-tolerant ("FT"), so there's no FT-subset constraint on where the
-  bus pins go — just don't reuse PA11/PA12 (USB), PA13/PA14 (SWD), or
-  PH0/PH1 (HSE crystal, if populated), which this driver already avoids.
-  (PC14/PC15 lose FT only in oscillator mode, which the backup-domain
-  reset below rules out.)
-- **CE#/OE#/WE# are on PC13/PC14/PC15, the only Port C pins that exist
-  on this package, and those pins carry backup-domain baggage.** They're
-  fed through the backup-domain power switch (2MHz / 30pF / 3mA-sink
-  cap, never a current source — hence their own `GPIO_SPEED_FREQ_LOW`
-  init in `SST_Init()`). PC14/PC15 are also OSC32_IN/OSC32_OUT (LSE),
-  and PC13 can be taken over by RTC tamper/timestamp/alarm output. LSE
-  and RTC settings survive a normal reset, so `SST_Init()` does a full
-  backup-domain reset (`__HAL_RCC_BACKUPRESET_FORCE/RELEASE`) before
-  driving these pins — the LSE must stay disabled in code. Don't add
-  RTC/LSE/backup-register use without first moving these control lines,
-  and don't mark PC13-15 as outputs in the `.ioc`: CubeMX's generated
-  `MX_GPIO_Init()` runs after `SST_Init()` and would drive them low,
-  asserting CE#/OE#/WE# at boot. Pin facts come from DS9716 Table 8
-  (copy in `datasheet/`; F401xB/C) — the F401CE's own DS10086 has the
-  same 48-pin pinout.
+  bus pins go — just don't reuse PA11/PA12 (USB) or PH0/PH1 (HSE
+  crystal, if populated), which this driver already avoids.
+- **WE#/OE# are on the SWD pins (WE# = PA13/SWDIO, OE# = PA14/SWCLK),
+  so SWD is sacrificed once `SST_Init()` runs.** PC14/PC15 were tried
+  first and didn't work on the user's board (Black-Pill-style boards fit
+  a 32.768kHz crystal + load caps there). Reflashing goes through ST's
+  system bootloader: hold BOOT0, tap reset, then flash via ST-Link or
+  USB DFU (README "Flashing / debugging"). There is no live debugging of
+  the app — don't add a boot-delay window or connect-under-reset config
+  unless asked (the user chose BOOT0 recovery). **WE# must stay on
+  PA13**: its reset-state SWDIO pull-up holds WE# deasserted until
+  `SST_Init()` runs; PA14's SWCLK pull-down asserts OE# instead, which is
+  harmless. `SST_Init()` preloads both high via BSRR before switching
+  them to output. Hardware rules (README "Wiring"): unplug the ST-Link
+  while the flash is in use (same net as PA13/PA14), and power
+  the flash off (or pull the chip) while reflashing, since CE# is
+  hardwired low and SWD/DFU traffic could otherwise write it while the
+  MCU is in reset or the bootloader.
+- **CE# is hardwired to GND on the board — it is not an MCU pin and the
+  firmware never drives it** (bench-confirmed working with WE#=PA13,
+  OE#=PA14). The flash is therefore always selected, so WE# must never
+  glitch low (hence the reset-state/BSRR-preload rules above). No Port C
+  pin is used. PC14/PC15 were retried for OE#/WE# with CE# grounded and
+  still failed (Black Pill 32.768kHz crystal + caps), so that option is
+  closed. Because PC13-15 are no longer used, `SST_Init()` has no
+  backup-domain reset; if a signal is ever moved back onto PC13-15,
+  they sit behind the backup-domain power switch (2MHz / 30pF /
+  sink-only) and RTC/LSE settings can claim them — reinstate a
+  `__HAL_RCC_BACKUPRESET_FORCE/RELEASE` and low-speed init first. Pin
+  facts come from DS9716 Table 8 (copy in `datasheet/`; F401xB/C) — the
+  F401CE's own DS10086 has the same 48-pin pinout.
 - **Read→write bus turnaround:** `bb_write_byte()` waits one
-  `bus_delay()` before driving D0-D7, because after a read the flash is
-  still driving the bus until the slow (low-speed PC14) OE# rise plus
-  its output-disable time finish. Keep that delay if tuning timing.
+  `bus_delay()` before driving D0-D7, because after a read the flash
+  keeps driving the bus for its output-disable time after OE# rises.
+  Keep that delay if tuning timing.
 - **`BUS_DELAY_CYCLES`** in `sst39sf040.c` is a deliberately
   conservative bus-timing margin (not bench-verified against a specific
   chip's speed grade), sized against this MCU's 84MHz max clock (vs the

@@ -62,15 +62,16 @@ DS9716 Table 8, whose UQFN48 column shows "-" for PC0-PC3 while the
 broken out (16 pins each). That rules out
 the F407 driver's original "one full port for the low address word,
 another full port for data + high address + control" layout outright --
-there's no second full 16-pin port left once Port A gives up 4 pins to
-USB (PA11/PA12) and SWD (PA13/PA14). **Port B itself isn't a full 16
+there's no second full 16-pin port left once Port A gives up 2 pins to
+USB (PA11/PA12). **Port B itself isn't a full 16
 pins either: PB11 is not bonded out on this package**, so it's 15 usable
 pins, not 16. This branch's layout uses the 15 available pins of Port B
 for most of the low address word (mirroring the F407's dedicated address
 port), relocates the one address line that would have landed on PB11
 onto the last free pin of Port A, and splits data + high address across
-the rest of Port A, with the three control lines moved to their own
-footprint on Port C -- see the comment block at the top of
+the rest of Port A. The control lines take the SWD pins (WE# = PA13,
+OE# = PA14); CE# isn't driven by the MCU at all (hardwired to GND) -- SWD is sacrificed, see "Flashing /
+debugging" below. See the comment block at the top of
 `sst39sf040.c` for the exact bit layout and why.
 
 **Don't assume this generalizes to every 48-pin STM32F4.** The pin
@@ -84,9 +85,8 @@ The SST39SF040 is a **5V-only part**. Power it from a separate 5V rail,
 not the STM32's 3.3V. Good news for this target: **every GPIO pin on
 the STM32F401's 48-pin package is 5V-tolerant ("FT")** -- confirmed
 against ST's DS10086 pin definition table -- except PC14/PC15/PH0/PH1
-while configured in oscillator mode. PC14/PC15 are used below (OE#/WE#),
-but never in oscillator mode: `SST_Init()` resets the backup domain,
-which turns the LSE oscillator off, before driving them as GPIO. That's a meaningfully simpler story than the F407,
+while configured in oscillator mode, and none of those four is used
+below. That's a meaningfully simpler story than the F407,
 where FT status varies pin-by-pin and had to be checked individually;
 here, the chip driving 5V back onto any of these pins during reads is
 safe by construction, not by careful pin selection. Decouple VCC/GND at
@@ -124,49 +124,47 @@ the comment block at the top of `sst39sf040.c` for why PA15 specifically.
 
 | Signal | STM32 pin |
 |---|---|
-| CE# | PC13 |
-| OE# | PC14 |
-| WE# | PC15 |
+| WE# | PA13 (SWDIO) |
+| OE# | PA14 (SWCLK) |
+| CE# | **GND** (hardwired, not an MCU pin) |
 
-CE# is driven low once at startup and left there for the whole session
-(this is the only device on the bus, so there's no need to toggle chip
-select per access) -- OE#/WE#/CE# do the actual per-cycle work. CE# is
-deliberately the one on PC13 (see caveat below) since it's the only one
-of the three that doesn't toggle on every access.
+CE# is tied directly to ground, so the flash is always selected (it's
+the only device on the bus, so there's no need to toggle chip select
+per access) -- OE#/WE# do the actual per-cycle work. No Port C pin is
+used.
 
-PC13-PC15 are the only Port C pins that exist on this 48-pin package
-(see "Package note" above) and are fed through the backup-domain power
-switch, which caps them at 2MHz output speed / 30pF load and forbids
-using them as a current source (e.g. to drive an LED) -- `SST_Init()`
-gives them their own low-speed GPIO init rather than reusing the
-high-speed setting used for the rest of the bus. PC14/PC15 also default
-to OSC32_IN/OSC32_OUT (the LSE 32.768kHz RTC oscillator pins), and
-PC13's function can be overridden by the RTC's tamper/timestamp/alarm
-output settings. Nothing in this project enables the LSE or the RTC, but
-their settings live in the backup domain, which survives a normal reset
--- so leftovers from earlier firmware on the board could still be active.
-`SST_Init()` therefore does a full backup-domain reset (clearing the LSE,
-the RTC, and the backup registers, none of which this project uses)
-before configuring these pins as outputs. If you ever add RTC, LSE, or
-backup-register support to this project, re-wire CE#/OE#/WE# elsewhere
-first and drop that reset.
+**OE#/WE# are on the SWD pins, so SWD stops working once the firmware
+starts** (see "Flashing / debugging" for how to reflash). WE# is the one
+on PA13 deliberately: until `SST_Init()` runs, PA13 keeps SWDIO's
+internal pull-up, so WE# stays deasserted through reset and boot and no
+stray write can happen; PA14 keeps SWCLK's pull-down, which asserts OE#
+-- harmless, since the data pins are MCU inputs then. Don't swap them.
+(PC14/PC15 were tried first, including with CE# grounded, and didn't
+work -- Black-Pill-style boards fit a 32.768kHz crystal and load caps
+on them.)
+
+⚠️ **Two hardware rules that follow from sharing the SWD pins:**
+
+- **Unplug the ST-Link (or at least its SWDIO/SWCLK wires) while the
+  flash is connected and the firmware is running.** The board's SWD
+  header is the same net as PA13/PA14, so the MCU and the probe would
+  drive against each other.
+- **Isolate the flash while reflashing.** With CE# grounded the chip is
+  always selected, so while the MCU is held in reset or running ST's
+  bootloader (e.g. while you reflash it), PA13/PA14 are not driven by
+  this firmware and SWD/DFU traffic can toggle the flash's WE#/OE#. Power
+  off the flash's 5V rail or pull the chip before reflashing -- a
+  10k pull-up on WE# (to 3.3V/5V) also helps keep it deasserted.
 
 **Check your specific board before wiring.** PB2 doubles as BOOT1
 (sampled at reset only when BOOT0 is pulled high to select system/RAM
 bootloader mode; irrelevant with BOOT0 held low for normal flash boot,
-which is this project's default). PC13 often carries an onboard LED or
-button on Black Pill-style boards -- that's exactly why CE# (asserted
-once at boot and otherwise static) is the signal placed there rather
-than OE#/WE#, but it will still visibly light/affect that LED/button for
-the whole session once CE# goes low; if your board's PC13 use conflicts,
-swap it for another line in the table above. PA11-PA14 (USB D-/D+,
-SWDIO/SWCLK) and PH0/PH1 (HSE crystal, if your board has one) are
-reserved and must not be reused for the bus -- this driver never touches
-them. PA15 (A11 above), along with PB3 and PB4 which are already in the
-table as A3/A4, default to the full-JTAG signals JTDI/JTDO(SWO)/NJTRST
-at reset -- this driver reconfigures them as plain GPIO, which is safe
-here since debug is SWD-only (2-wire, PA13/PA14) and never touches full
-JTAG.
+which is this project's default). PA11/PA12 (USB D-/D+) and PH0/PH1 (HSE crystal, if
+your board has one) are reserved and must not be reused for the bus --
+this driver never touches them. PA15 (A11 above), along with PB3 and PB4
+which are already in the table as A3/A4, default to the full-JTAG
+signals JTDI/JTDO(SWO)/NJTRST at reset -- this driver reconfigures them
+as plain GPIO, which is fine since full JTAG isn't used.
 
 USB: PA11 (USB_DM) / PA12 (USB_DP), device-only OTG FS -- CubeMX wires
 these automatically when you enable the peripheral below.
@@ -375,6 +373,25 @@ From the command line, OpenOCD can also be driven directly, e.g.:
 ```bash
 openocd -f openocd.cfg -c "program build/Debug/EPROM_Programmer_with_STM32F407VG.elf verify reset exit"
 ```
+
+### ⚠️ Reflashing once this firmware is on the chip
+
+This branch repurposes the SWD pins (PA13/PA14) as the flash's WE#/OE#,
+so once this firmware boots, the ST-Link can no longer attach, and
+**live debugging of the running application isn't possible**. To
+reflash, boot ST's built-in bootloader instead, which leaves SWD alone:
+
+1. Hold **BOOT0** high (the BOOT0 button on Black-Pill-style boards).
+2. Tap **NRST** (reset), then release BOOT0.
+3. Flash as usual with the `openocd ... program` command above. The
+   final `reset` boots the new firmware normally. Alternatively, the
+   bootloader also offers USB DFU on PA11/PA12, e.g.
+   `dfu-util -a 0 -s 0x08000000:leave -D firmware.bin`.
+
+The first flash onto a blank chip (or one still running other firmware)
+works the normal way. `openocd.cfg` doesn't need changes. See "Wiring"
+for why the ST-Link must be unplugged while the flash is in use, and why
+the flash should be powered off while you reflash.
 
 ## Running the host tool
 

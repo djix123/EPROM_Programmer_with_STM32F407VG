@@ -34,59 +34,53 @@
  *                  while writing -- switched via MODER)
  *     bits 8-10  = A16,A17,A18 (always output)
  *     bits 11-12 = USB_OTG_FS (D-/D+) -- CubeMX-owned, untouched here
- *     bits 13-14 = SWDIO/SWCLK -- untouched here, keeps hardware debug
+ *     bit  13    = WE# (always output, active low) -- repurposed SWDIO
+ *     bit  14    = OE# (always output, active low) -- repurposed SWCLK
+ *                  SWD stops working once SST_Init() claims these two
+ *                  pins; reflash by holding BOOT0 through a reset (ST's
+ *                  system bootloader runs instead and leaves SWD alone --
+ *                  see README "Flashing / debugging"). The mapping is
+ *                  chosen for reset safety: until SST_Init() runs, PA13
+ *                  keeps SWDIO's internal pull-up, holding WE# deasserted
+ *                  so no write cycle can occur; PA14 keeps SWCLK's
+ *                  pull-down, asserting OE#, which is harmless (D0-D7 are
+ *                  MCU inputs then). Swapping them would hold WE# low
+ *                  through reset.
  *     bit  15    = A11 (always output) -- the only free pin left on a
  *                  port that already has an address BSRR write, so
  *                  putting A11 here keeps the address bus at 2 writes
  *                  total instead of needing a 3rd port. PA15 defaults
  *                  to JTDI (full-JTAG) at reset, same as PB3/PB4 below
- *                  it in GPIOA's init -- harmless since this project
- *                  debugs over SWD only (PA13/PA14), not full JTAG.
+ *                  it in GPIOA's init -- harmless since full JTAG isn't
+ *                  used.
  *   A11 and A16-A18 are set together via one BSRR write (atomic
- *   set/reset of just those bits) so it never disturbs the data pins
- *   living on the same port.
+ *   set/reset of just those bits) so it never disturbs the data pins or
+ *   OE#/WE# living on the same port.
  *
- *   GPIOC:
- *     bits 13-15 = CE#, OE#, WE# (always output, active low) -- the only
- *   three Port C pins that exist on this package. They're routed through
- *   the backup-domain power switch (ST datasheet DS9716 Table 8, note 2):
- *   output mode is capped at 2MHz toggle speed / 30pF load, and they must
- *   never be used as a current source (e.g. to drive an LED), so this
- *   block gets its own GPIO_SPEED_FREQ_LOW init in SST_Init() instead of
- *   reusing the HIGH-speed struct used for the rest of the bus. CE# (the
- *   only one of the three that never toggles after init) is deliberately
- *   the one placed on PC13, since PC13 commonly carries an onboard
- *   LED/button on Black-Pill-style boards (see README "Wiring") -- OE#
- *   and WE# toggle every access, so keeping them off PC13 avoids fighting
- *   that LED/button on every read/write.
- *     PC14/PC15 default to OSC32_IN/OSC32_OUT (the LSE 32.768kHz RTC
- *   oscillator pins) -- if RCC_BDCR's LSEON bit is ever set, the LSE
- *   hardware takes over these pins electrically regardless of GPIO mode.
- *   Likewise, RTC tamper/timestamp/alarm-output settings override PC13.
- *   Nothing in this project enables LSE or the RTC, but both live in the
- *   backup domain and survive a normal NRST/system reset, so SST_Init()
- *   does a full backup-domain reset before switching these pins to GPIO
- *   output.
+ *   GPIOC: unused. CE# is NOT driven by the MCU -- it is hardwired to
+ *   GND on the board, so the flash is permanently selected (it's the
+ *   only device on the bus anyway). PC13-PC15 are the only Port C pins
+ *   on this package and sit behind the backup-domain power switch (2MHz /
+ *   30pF cap, RTC/LSE can claim them); PC14/PC15 were tried for OE#/WE#
+ *   but didn't work on Black-Pill-style boards (32.768kHz crystal + load
+ *   caps), which is why OE#/WE# are on PA13/PA14 above.
  *
  *   Pin-existence facts here are from ST's DS9716 (STM32F401xB/C) Table
  *   8; the F401CE's own datasheet is DS10086 (F401xD/E), whose 48-pin
  *   pinout is identical.
  *
- * CE# is asserted once in SST_Init() and left low for the whole
- * session -- this is the only device on the bus, so there's no need to
- * toggle chip select per access. OE#/WE# do the real per-cycle work.
+ * Because CE# is always asserted, OE#/WE# do all the per-cycle work and
+ * WE# must never glitch low -- see the reset-safety note on PA13 above.
  * ------------------------------------------------------------------- */
 
-#define CE_PIN   GPIO_PIN_13
-#define OE_PIN   GPIO_PIN_14
-#define WE_PIN   GPIO_PIN_15
+#define OE_WE_PORT  GPIOA
+#define WE_PIN      GPIO_PIN_13
+#define OE_PIN      GPIO_PIN_14
 
-#define OE_LOW()   (GPIOC->BSRR = ((uint32_t)OE_PIN) << 16)
-#define OE_HIGH()  (GPIOC->BSRR = (uint32_t)OE_PIN)
-#define WE_LOW()   (GPIOC->BSRR = ((uint32_t)WE_PIN) << 16)
-#define WE_HIGH()  (GPIOC->BSRR = (uint32_t)WE_PIN)
-#define CE_LOW()   (GPIOC->BSRR = ((uint32_t)CE_PIN) << 16)
-#define CE_HIGH()  (GPIOC->BSRR = (uint32_t)CE_PIN)
+#define OE_LOW()   (OE_WE_PORT->BSRR = ((uint32_t)OE_PIN) << 16)
+#define OE_HIGH()  (OE_WE_PORT->BSRR = (uint32_t)OE_PIN)
+#define WE_LOW()   (OE_WE_PORT->BSRR = ((uint32_t)WE_PIN) << 16)
+#define WE_HIGH()  (OE_WE_PORT->BSRR = (uint32_t)WE_PIN)
 
 /* Bus timing margin. 30 cycles is ~360ns at the F401's max 84MHz HCLK
  * (roughly 2x more conservative in real time than the ~180ns this same
@@ -95,11 +89,8 @@
  * but NOT bench-verified for your exact chip's speed grade. Tighten
  * only after checking your datasheet and ideally a scope capture.
  *
- * This also sets the OE#/WE# toggle rate: reads take two bus_delay()
- * calls per byte (~1/(2*360ns) =~ 1.4MHz), writes four (~0.7MHz) -- both
- * under PC13-15's 2MHz output-speed cap (see the GPIOC comment above),
- * reads with the least margin. Re-check against a scope if this is ever
- * tightened for speed. */
+ * OE#/WE# are on normal high-speed PA13/PA14, so no pin speed cap
+ * constrains how far this can be tightened. */
 #define BUS_DELAY_CYCLES 30u
 
 static inline void bus_delay(void)
@@ -124,8 +115,8 @@ static inline void set_address(uint32_t addr)
 
 /* GPIOA pins 0-7 mode bits live in the low 16 bits of MODER (2 bits/pin).
  * Clearing them = input (00); setting the 01-per-pin pattern = output.
- * A16-A18 on bits 8-10 and USB/SWD on bits 11-14 live in the upper bits
- * of this same register and are untouched by this mask. */
+ * A16-A18 (bits 8-10), USB (11-12), WE#/OE# (13-14) and A11 (15) live in
+ * the upper bits of this same register and are untouched by this mask. */
 static inline void data_pins_input(void)
 {
     GPIOA->MODER &= ~0x0000FFFFu;
@@ -140,7 +131,7 @@ static inline void data_pins_output(void)
 static inline void write_data(uint8_t data)
 {
     /* bits 0-7 only -- upper 16 bits of both masks are 0, so this never
-     * touches A16-A18 on bits 8-10 or USB/SWD on bits 11-14 */
+     * touches A16-A18, USB, WE#/OE# or A11 on bits 8-15 */
     GPIOA->BSRR = (uint32_t)data | ((uint32_t)(uint8_t)(~data) << 16);
 }
 
@@ -166,8 +157,8 @@ static void bb_write_byte(uint32_t addr, uint8_t data)
     set_address(addr);
     /* Bus turnaround: if the previous cycle was a read (DQ7 polling, ID
      * readback), OE# only just went high, and the flash keeps driving
-     * D0-D7 until OE#'s rise completes (up to ~100ns on low-speed PC14)
-     * plus its own output-disable time (~20-30ns). Wait before the MCU
+     * D0-D7 for its output-disable time after that (tDF/tOHZ, ~20-30ns,
+     * plus the OE# edge itself on hand-wired buses). Wait before the MCU
      * starts driving the same pins, to avoid contention. */
     bus_delay();
     data_pins_output();
@@ -285,7 +276,6 @@ void SST_Init(void)
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
 
     /* GPIOB: A0-A10,A12-A15, plain push-pull output -- this port is
      * dedicated to the address bus so a single GPIOB->ODR write can
@@ -309,71 +299,41 @@ void SST_Init(void)
     GPIOB->ODR = 0x0000u;
 
     /* GPIOA bits 8-10,15: A16,A17,A18,A11, always-output. No power-on
-     * glitch hazard here (unlike OE#/WE#/CE# below): these aren't
+     * glitch hazard here (unlike OE#/WE# below): these aren't
      * active-low control lines, so whatever address value they happen
-     * to come up driving is harmless until CE# is actually asserted.
+     * to come up driving is harmless as long as OE#/WE# are deasserted.
      * Bit 15 (A11) overrides PA15's reset-default JTDI function, which
-     * is fine since debug here is SWD-only (PA13/PA14) -- bits 11-14
-     * (USB/SWD) are left alone, not touched by this or any other call
-     * in this driver. */
+     * is fine since full JTAG isn't used. Bits 11-12 (USB) are left
+     * alone; bits 13-14 (WE#/OE#) are set up below. */
     gpio.Pin = GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_15;
     HAL_GPIO_Init(GPIOA, &gpio);
 
-    /* Full backup-domain reset before touching PC13-PC15. The backup
-     * domain (RCC_BDCR + all RTC registers) survives a normal NRST/system
-     * reset, so settings left behind by earlier firmware on this board
-     * would still be live here even though this project never sets them:
-     *   - RCC_BDCR LSEON/LSEBYP: the LSE oscillator takes over PC14
-     *     (OSC32_IN) / PC15 (OSC32_OUT) regardless of GPIO mode, fighting
-     *     the OE#/WE# drive.
-     *   - RTC_TAFCR / RTC_CR (tamper, timestamp, alarm/calib output): per
-     *     DS9716/DS10086 Table 8 note 3, these override PC13 (CE#).
-     * BDRST clears both in one step. It also wipes the RTC and backup
-     * registers -- unused by this project; if RTC or backup-register
-     * support is ever added, this reset (and the PC13-15 pin choice)
-     * has to be revisited. Backup-domain registers are write-protected
-     * until PWR_CR's DBP bit is set; the PWR clock is already enabled by
-     * SystemClock_Config(), which runs before this. */
-    HAL_PWR_EnableBkUpAccess();
-    __HAL_RCC_BACKUPRESET_FORCE();
-    __HAL_RCC_BACKUPRESET_RELEASE();
-    {
-        /* LSE stops within a few LSE cycles; bounded wait (a few ms worst
-         * case at 84MHz) in case it was running. */
-        uint32_t lserdy_timeout = SystemCoreClock / 1000u;
-        while ((RCC->BDCR & RCC_BDCR_LSERDY) && lserdy_timeout--) { }
-    }
-
-    /* GPIOC bits 13-15: CE#, OE#, WE#, all always-output, active low --
-     * see the GPIOC comment at the top of this file for why these are
-     * the only three Port C pins that exist here, and why this block
-     * needs its own GPIO_SPEED_FREQ_LOW init (2MHz/30pF cap on PC13-15)
-     * rather than reusing the HIGH-speed `gpio` struct above.
+    /* Control lines, always-output, active low: WE# = PA13, OE# = PA14
+     * (repurposed SWDIO/SWCLK -- SWD stops working from here on; see
+     * the GPIOA comment at the top of this file). CE# is hardwired to
+     * GND on the board and not driven here.
      *
-     * IMPORTANT: pre-load OE#/WE#/CE# HIGH via BSRR *before* switching
-     * these pins to output mode. GPIOx_ODR resets to 0 on every MCU
-     * reset, and HAL_GPIO_Init() only touches MODER/OSPEEDR/etc, never
-     * ODR -- so without this, the instant these pins become outputs
-     * they'd all start driven LOW (falsely asserted), and the
-     * OE_HIGH()/WE_HIGH() calls that follow would then produce a real
-     * WE# rising edge while CE# is still low: exactly the trigger for a
-     * write cycle, at address 0x00000, with whatever garbage happens to
-     * be on the not-yet-configured data pins. That's a spurious write
-     * to the flash on every single boot. Preloading ODR first means the
-     * pins come up already high with no transient low state at all. */
-    GPIOC->BSRR = (uint32_t)(OE_PIN | WE_PIN | CE_PIN);
+     * IMPORTANT: pre-load OE#/WE# HIGH via BSRR *before* switching these
+     * pins to output mode. GPIOx_ODR resets to 0 on every MCU reset, and
+     * HAL_GPIO_Init() only touches MODER/OSPEEDR/etc, never ODR -- so
+     * without this, the instant these pins become outputs they'd both
+     * start driven LOW (falsely asserted), and the WE_HIGH() call that
+     * follows would then produce a real WE# rising edge with CE# always
+     * low: exactly the trigger for a write cycle, at address 0x00000,
+     * with whatever garbage is on the not-yet-configured data pins. That
+     * would be a spurious write to the flash on every single boot.
+     * Preloading ODR first means the pins come up already high with no
+     * transient low state at all. */
+    OE_WE_PORT->BSRR = (uint32_t)(OE_PIN | WE_PIN);
 
-    GPIO_InitTypeDef gpio_ctrl = {0};
-    gpio_ctrl.Mode  = GPIO_MODE_OUTPUT_PP;
-    gpio_ctrl.Pull  = GPIO_NOPULL;
-    gpio_ctrl.Speed = GPIO_SPEED_FREQ_LOW;
-    gpio_ctrl.Pin   = OE_PIN | WE_PIN | CE_PIN;
-    HAL_GPIO_Init(GPIOC, &gpio_ctrl);
-    /* Already high from the BSRR preload above -- these are just
-     * belt-and-suspenders confirmation, not load-bearing. */
+    /* PA13/PA14: same HIGH-speed push-pull output as the rest of the bus
+     * (`gpio` still holds that config). This overrides their AF0 SWD
+     * function and drops SWDIO's pull-up / SWCLK's pull-down. */
+    gpio.Pin = OE_PIN | WE_PIN;
+    HAL_GPIO_Init(OE_WE_PORT, &gpio);
+    /* Already high from the BSRR preload above -- belt-and-suspenders. */
     OE_HIGH();
     WE_HIGH();
-    CE_HIGH();   /* stays high until asserted once at the end of this fn */
 
     /* GPIOA bits 0-7: D0-D7, default to input (safe: avoids driving
      * against the flash chip at power-up). Switched to output on demand
@@ -382,9 +342,6 @@ void SST_Init(void)
     gpio.Pin  = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 |
                 GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
     HAL_GPIO_Init(GPIOA, &gpio);
-
-    /* Only device on this bus -- enable chip select once and leave it. */
-    CE_LOW();
 }
 
 uint8_t SST_ReadByte(uint32_t addr)
