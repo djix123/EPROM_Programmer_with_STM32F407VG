@@ -75,7 +75,7 @@ for the one deliberate patch documented below.
   at the top of the `.c` file for the exact mapping — it's chosen so
   the whole low address word is one GPIOB register write and the data
   byte is one GPIOA register write, with WE#/OE# on the repurposed SWD
-  pins PA13/PA14; CE# is hardwired to GND, not an MCU pin). Issues the SST/AMD JEDEC command sequences
+  pins PA13/PA14; CE# is not an MCU pin: pulled high externally and grounded by hand before use). Issues the SST/AMD JEDEC command sequences
   (unlock, program, erase) and does DQ7 data-polling to detect
   completion. Chip identity (SST39SF040 vs AM29F040B — different sector
   sizes and erase timeouts) is auto-detected at runtime via
@@ -155,14 +155,17 @@ for the one deliberate patch documented below.
   `SST_Init()` runs; PA14's SWCLK pull-down asserts OE# instead, which is
   harmless. `SST_Init()` preloads both high via BSRR before switching
   them to output. Hardware rules (README "Wiring"): unplug the ST-Link
-  while the flash is in use (same net as PA13/PA14), and power
-  the flash off (or pull the chip) while reflashing, since CE# is
-  hardwired low and SWD/DFU traffic could otherwise write it while the
-  MCU is in reset or the bootloader.
-- **CE# is hardwired to GND on the board — it is not an MCU pin and the
-  firmware never drives it** (bench-confirmed working with WE#=PA13,
-  OE#=PA14). The flash is therefore always selected, so WE# must never
-  glitch low (hence the reset-state/BSRR-preload rules above). No Port C
+  while the flash is in use (same net as PA13/PA14), and keep
+  CE# high (deselected) while reflashing, since SWD/DFU traffic could
+  otherwise toggle WE#/OE# on a selected chip while the MCU is in reset
+  or the bootloader.
+- **CE# is not an MCU pin and the firmware never drives it.** It should
+  be pulled high (external pull-up) so the flash is deselected by default
+  and set to GND by hand (jumper/switch) before the flash is accessed;
+  the firmware assumes it's already low once running (CE# high → reads
+  return garbage, writes/erases are ignored). Bench-confirmed working
+  with WE#=PA13, OE#=PA14 and CE# grounded. While grounded the flash is
+  selected, so WE# must never glitch low (hence the reset-state/BSRR-preload rules above). No Port C
   pin is used. PC14/PC15 were retried for OE#/WE# with CE# grounded and
   still failed (Black Pill 32.768kHz crystal + caps), so that option is
   closed. Because PC13-15 are no longer used, `SST_Init()` has no

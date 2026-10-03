@@ -57,9 +57,13 @@
  *   set/reset of just those bits) so it never disturbs the data pins or
  *   OE#/WE# living on the same port.
  *
- *   GPIOC: unused. CE# is NOT driven by the MCU -- it is hardwired to
- *   GND on the board, so the flash is permanently selected (it's the
- *   only device on the bus anyway). PC13-PC15 are the only Port C pins
+ *   GPIOC: unused. CE# is NOT driven by the MCU. It should be pulled
+ *   HIGH (external pull-up) so the flash stays deselected by default --
+ *   e.g. while the MCU is in reset or running ST's bootloader during a
+ *   reflash -- and must be set to GND by hand (jumper/switch) before the
+ *   flash is accessed. The firmware assumes CE# is already low once it
+ *   is running; with CE# high, reads return garbage and writes/erases
+ *   are ignored. PC13-PC15 are the only Port C pins
  *   on this package and sit behind the backup-domain power switch (2MHz /
  *   30pF cap, RTC/LSE can claim them); PC14/PC15 were tried for OE#/WE#
  *   but didn't work on Black-Pill-style boards (32.768kHz crystal + load
@@ -69,7 +73,7 @@
  *   8; the F401CE's own datasheet is DS10086 (F401xD/E), whose 48-pin
  *   pinout is identical.
  *
- * Because CE# is always asserted, OE#/WE# do all the per-cycle work and
+ * With CE# grounded for a session, OE#/WE# do all the per-cycle work and
  * WE# must never glitch low -- see the reset-safety note on PA13 above.
  * ------------------------------------------------------------------- */
 
@@ -310,8 +314,9 @@ void SST_Init(void)
 
     /* Control lines, always-output, active low: WE# = PA13, OE# = PA14
      * (repurposed SWDIO/SWCLK -- SWD stops working from here on; see
-     * the GPIOA comment at the top of this file). CE# is hardwired to
-     * GND on the board and not driven here.
+     * the GPIOA comment at the top of this file). CE# isn't driven
+     * here: it's pulled high externally and must be grounded by hand
+     * before the flash is accessed.
      *
      * IMPORTANT: pre-load OE#/WE# HIGH via BSRR *before* switching these
      * pins to output mode. GPIOx_ODR resets to 0 on every MCU reset, and

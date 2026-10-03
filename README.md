@@ -70,7 +70,7 @@ for most of the low address word (mirroring the F407's dedicated address
 port), relocates the one address line that would have landed on PB11
 onto the last free pin of Port A, and splits data + high address across
 the rest of Port A. The control lines take the SWD pins (WE# = PA13,
-OE# = PA14); CE# isn't driven by the MCU at all (hardwired to GND) -- SWD is sacrificed, see "Flashing /
+OE# = PA14); CE# isn't driven by the MCU at all (external pull-up, grounded by hand) -- SWD is sacrificed, see "Flashing /
 debugging" below. See the comment block at the top of
 `sst39sf040.c` for the exact bit layout and why.
 
@@ -126,12 +126,15 @@ the comment block at the top of `sst39sf040.c` for why PA15 specifically.
 |---|---|
 | WE# | PA13 (SWDIO) |
 | OE# | PA14 (SWCLK) |
-| CE# | **GND** (hardwired, not an MCU pin) |
+| CE# | **not an MCU pin** -- pull high, ground by hand |
 
-CE# is tied directly to ground, so the flash is always selected (it's
-the only device on the bus, so there's no need to toggle chip select
-per access) -- OE#/WE# do the actual per-cycle work. No Port C pin is
-used.
+CE# is not driven by the MCU. **Pull it high** (external pull-up) so the
+flash is deselected by default, and **set it to ground by hand** (jumper
+or switch) before accessing the flash -- the firmware assumes CE# is
+already low once it's running. With CE# high, reads return garbage and
+writes/erases are ignored. It's the only device on the bus, so once
+grounded it stays selected for the whole session -- OE#/WE# do the actual
+per-cycle work. No Port C pin is used.
 
 **OE#/WE# are on the SWD pins, so SWD stops working once the firmware
 starts** (see "Flashing / debugging" for how to reflash). WE# is the one
@@ -149,12 +152,13 @@ on them.)
   flash is connected and the firmware is running.** The board's SWD
   header is the same net as PA13/PA14, so the MCU and the probe would
   drive against each other.
-- **Isolate the flash while reflashing.** With CE# grounded the chip is
-  always selected, so while the MCU is held in reset or running ST's
-  bootloader (e.g. while you reflash it), PA13/PA14 are not driven by
-  this firmware and SWD/DFU traffic can toggle the flash's WE#/OE#. Power
-  off the flash's 5V rail or pull the chip before reflashing -- a
-  10k pull-up on WE# (to 3.3V/5V) also helps keep it deasserted.
+- **Keep CE# high while reflashing.** While the MCU is held in reset or
+  running ST's bootloader (e.g. while you reflash it), PA13/PA14 are not
+  driven by this firmware and SWD/DFU traffic can toggle the flash's
+  WE#/OE#. With CE# pulled high the chip ignores all of it, so only
+  ground CE# once the new firmware is running. If CE# is grounded
+  during a reflash, power off the flash's 5V rail or pull the chip
+  instead.
 
 **Check your specific board before wiring.** PB2 doubles as BOOT1
 (sampled at reset only when BOOT0 is pulled high to select system/RAM
@@ -391,7 +395,7 @@ reflash, boot ST's built-in bootloader instead, which leaves SWD alone:
 The first flash onto a blank chip (or one still running other firmware)
 works the normal way. `openocd.cfg` doesn't need changes. See "Wiring"
 for why the ST-Link must be unplugged while the flash is in use, and why
-the flash should be powered off while you reflash.
+CE# should be left high (deselected) while you reflash.
 
 ## Running the host tool
 
